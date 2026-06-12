@@ -1,0 +1,23 @@
+# DECISIONS.md — one line per judgment call (spec §0.4)
+
+- 2026-06-12 **Build mode:** milestone-gated with user sign-off at each gate (user's explicit choice over spec §0's full autonomy).
+- 2026-06-12 **Node 26.3.0 kept** (spec pins Node 22 LTS): user's call; M1 `pnpm build`/strict `tsc` gate is the compatibility check.
+- 2026-06-12 **Engine pinned v0.1.8 @ `dce6214`** — latest release tag, equal to origin HEAD at clone time; tag-only fetch refspec also defuses the launcher's interactive update-check.
+- 2026-06-12 **uv 0.11.21 (brew), engine deps via `uv sync`** — exact versions in engine `uv.lock`; venv 1.2 GB, torch 2.10.0, MLX importable.
+- 2026-06-12 **API contract derived from source, not docs** — 10-agent map+verify workflow (raw evidence: `docs/m0-raw/*.json`); docs/en/API.md found accurate but incomplete, several documented params dead in code.
+- 2026-06-12 **Bypass `start_api_server_macos.sh`** in our scripts; run `uv run acestep-api --host 127.0.0.1 --port 8001` with `ACESTEP_LM_BACKEND=mlx` directly (no interactive update prompt, no pip self-repair, deterministic env).
+- 2026-06-12 **Models pre-fetched via `acestep-download`** (strict weight check) — never trust the server's lazy first-job download (loose check + blocks event loop).
+- 2026-06-12 **Warm-up = lazy boot + `POST /v1/init {init_llm:true, lm_model_path:"acestep-5Hz-lm-1.7B"}`** then poll `/health.models_initialized` — keeps `/health` responsive (executor) and avoids the empty-body trap that later lazy-loads the 0.6B LM.
+- 2026-06-12 **No engine API key for MVP** — localhost-only binding; `--api-key` flag is a silent no-op anyway (env `ACESTEP_API_KEY` is the working mechanism if ever needed).
+- 2026-06-12 **LRC + quality score: unavailable over REST (Gradio-only)** → `songs.lrc`/`songs.quality_score` stay null; synced lyrics falls back to plain text; quality badge hidden (spec anticipated this with "verify in M0").
+- 2026-06-12 **Variations = one `/release_task` with `batch_size=N`** (default 2, clamp 1–4 client-side — engine has no batch cap on MPS), per-take explicit seeds via `use_random_seed:false` (random-mode `seed_value` is unreliable per source).
+- 2026-06-12 **Request `wav` masters from the engine; mp3 via our own ffmpeg encode** (engine mp3 is fixed 128k; we own download encoding per spec §9.3). Pending ffprobe bit-depth check.
+- 2026-06-12 **Enhance button = `POST /format_input`; Simple-Mode plan = `sample_mode`/`sample_query` on `/release_task`** (or `/v1/create_sample` if a sync plan is ever needed); Enhance calls serialized client-side (shared LLMHandler, no queue).
+- 2026-06-12 **Poll timeout owned by client** — unknown/expired task ids return status 0 forever; cap polling at engine timeout (600 s) + margin, then fail the job.
+- 2026-06-12 **Engine failure UX:** engine returns no error text via `/query_result` (cache path) — jobs store a generic engine-failure message plus last `progress_text` as a hint.
+- 2026-06-12 **`ACESTEP_CHECKPOINTS_DIR` not set** (API server ignores it in places → double-download risk); checkpoints live in `engine/ACE-Step-1.5/checkpoints/`.
+- 2026-06-12 **Weights fetched via direct `curl` from HF resolve URLs + sha256 verify against LFS oids** — `acestep-download`'s xet-backed path stalled repeatedly (<200 KB/s, sparse preallocated blobs that defeat size-based progress checks) while the classic CDN path sustained ~3.5 MB/s on the same link; engine runtime only checks files-on-disk, so hf metadata is unnecessary. `setup.sh` will prefer `acestep-download` but document this fallback.
+- 2026-06-12 **Built-in LM is NOT censored in practice:** M0 probes show the 1.7B planner writes explicit lyrics on request, and user-supplied explicit lyrics render unmodified — the spec's "safety-tuned, may refuse" assumption did not reproduce. Ollama lyrics seam (§6.2) retained for lyric *quality* (a dedicated uncensored writer > a 1.7B music-planner), not as a censorship workaround; README will state measured behavior.
+- 2026-06-12 **Client must strip `<|audio_code_NNNNN|>` artifacts** from LM plan lyrics (observed once in `/v1/create_sample` output).
+- 2026-06-12 **`wav` (16-bit PCM 48 kHz, ffprobe-verified) is the engine-request format** — master + WAV download; mp3 via our ffmpeg encode.
+- 2026-06-12 **Measured perf recorded in ENGINE_NOTES §9** (44 s cold boot; 22.4 s/song batch-2 30 s; 29.7 s for a 180 s song) — these are the only numbers the README may cite.

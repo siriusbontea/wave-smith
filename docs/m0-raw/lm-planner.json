@@ -1,0 +1,817 @@
+{
+ "key": "lm-planner",
+ "mapped": {
+  "summary": "ACE-Step 1.5's \"Simple Mode brain\" is a Qwen3-style causal LM family (\"acestep-5Hz-lm-0.6B/1.7B/4B\"; 1.7B ships inside the main HF repo ACE-Step/Ace-Step1.5, 0.6B/4B are separate ACE-Step/* repos). It is driven by LLMHandler (acestep/llm_inference.py) with three backends: nano-vllm (CUDA), PyTorch (\"pt\"), and mlx-lm (\"mlx\", preferred and auto-attempted on Apple Silicon even when \"vllm\" is requested). ACESTEP_INIT_LLM gates whether the LM loads at startup (auto = GPU-tier detection); when force-disabled, lazy loading is blocked and LM-dependent request fields hard-fail or are auto-disabled. --lm-model-path merely sets ACESTEP_LM_MODEL_PATH. Per request (/release_task), the LM is required by thinking / sample_mode / sample_query / use_format / full_analysis_only, and optionally engaged by use_cot_caption / use_cot_language / implicit use_cot_metas; thinking=true makes the LM also generate the 5Hz audio codes (llm_dit). Plan-only \"Enhance\" exists as separate synchronous endpoints: POST /format_input (rewrite caption+lyrics+fill metas) and POST /v1/create_sample (query -> full plan), plus analysis_only=true on /release_task (LM metas only, no audio). Critical lyrics finding: in the default path user lyrics flow verbatim into DiT conditioning (\"# Languages\\n{lang}\\n\\n# Lyric\\n{lyrics}<|endoftext|>\", truncated at 2048 tokens); no code path rewrites/filters them unless the client opts into use_format or sample_mode. The caption, however, IS rewritten by default because use_cot_caption defaults to true. No safety tuning, refusal logic, NSFW/profanity filtering, or content moderation exists anywhere in the request path; system prompts are one-line task instructions and constrained decoding is a purely structural FSM. LM sampling is exposed over REST via lm_temperature/lm_cfg_scale/lm_top_k/lm_top_p/lm_negative_prompt (lm_repetition_penalty and constrained_decoding are parsed but dead); max tokens is derived from duration, and the <think> CoT is structural, not a toggleable thinking mode.",
+  "claims": [
+   {
+    "topic": "LM model identity (name/size/HF path)",
+    "claim": "The planner LM is the 'acestep-5Hz-lm' family in three sizes: 0.6B, 1.7B, 4B. HF repos: ACE-Step/acestep-5Hz-lm-0.6B and ACE-Step/acestep-5Hz-lm-4B are standalone; acestep-5Hz-lm-1.7B is bundled in the main repo ACE-Step/Ace-Step1.5 and is DEFAULT_LM_MODEL. It is a Qwen3-style chat model (code references Qwen's chat template and mlx-lm's Qwen3 class; <think> CoT, <|im_end|> turns). Models are loaded from <checkpoints>/<lm_model_path>.",
+    "evidence": [
+     {
+      "file": "acestep/constants.py",
+      "lines": "193-198",
+      "quote": "LM_MODEL_NAMES = {\"0.6B\": \"acestep-5Hz-lm-0.6B\", \"1.7B\": \"acestep-5Hz-lm-1.7B\", \"4B\": \"acestep-5Hz-lm-4B\"}"
+     },
+     {
+      "file": "acestep/model_downloader.py",
+      "lines": "287-315",
+      "quote": "MAIN_MODEL_REPO = \"ACE-Step/Ace-Step1.5\" ... \"acestep-5Hz-lm-0.6B\": \"ACE-Step/acestep-5Hz-lm-0.6B\", \"acestep-5Hz-lm-4B\": \"ACE-Step/acestep-5Hz-lm-4B\" ... DEFAULT_LM_MODEL = \"acestep-5Hz-lm-1.7B\""
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "586-592",
+      "quote": "if lm_model_path is None: lm_model_path = \"acestep-5Hz-lm-1.7B\" ... full_lm_model_path = os.path.join(checkpoint_dir, lm_model_path)"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "1771-1777",
+      "quote": "because Qwen's chat template renders assistant messages containing a </think> tag"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "2953-2958",
+      "quote": "the \"model.\" prefix ... which is what mlx-lm's Qwen3 model expects"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Backend selection (mlx vs pt vs nano-vllm)",
+    "claim": "Valid backends are {vllm, pt, mlx} (vllm = vendored nano-vllm in acestep/third_parts/nano-vllm, CUDA-only). In LLMHandler.initialize: if backend=='mlx' OR (backend=='vllm' AND device=='mps'), MLX is attempted first via mlx_lm; on failure it falls back to PyTorch. 'vllm' on a non-CUDA device silently becomes 'pt'. vllm also falls back to pt when a preflight warning fires or free VRAM < 2GB, and to MLX-then-pt if vllm init throws on MPS. On macOS/MPS the GPU config sets recommended_backend='mlx' and lm_backend_restriction='pt_mlx_only'.",
+    "evidence": [
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "41",
+      "quote": "VALID_LM_BACKENDS = {\"vllm\", \"pt\", \"mlx\"}"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "677-709",
+      "quote": "if backend == \"mlx\" or (backend == \"vllm\" and device == \"mps\"): ... if backend == \"vllm\" and device != \"cuda\": ... backend = \"pt\""
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "735-766",
+      "quote": "vLLM disabled due to insufficient free VRAM ... falling back to PyTorch backend ... if device == \"mps\" and self._is_mlx_available(): ... trying MLX backend"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "796-801",
+      "quote": "from nanovllm import LLM, SamplingParams ... nano-vllm is not installed. Please install it using 'cd acestep/third_parts/nano-vllm && pip install .'"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "862-868",
+      "quote": "lm_backend_restriction=\"pt_mlx_only\" if _mps ... recommended_backend=\"mlx\" if _mps"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "2917-2931",
+      "quote": "_is_mlx_available ... import mlx_lm"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "ACESTEP_LM_BACKEND semantics",
+    "claim": "At server startup the backend is resolved via resolve_lm_backend(os.getenv('ACESTEP_LM_BACKEND'), gpu_config): invalid/missing values fall back to the GPU config's recommended_backend ('mlx' on MPS, 'vllm' on CUDA tiers), then restrictions are applied (pt_only -> 'pt'; pt_mlx_only + vllm -> mlx/pt). On per-request lazy init the precedence is req.lm_backend > ACESTEP_LM_BACKEND > 'vllm', validated only against the literal set {vllm,pt,mlx}. The /format_input and /v1/create_sample lazy inits read only the env var (default 'vllm'). There is no --lm-backend CLI flag on the API server.",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "74",
+      "quote": "lm_backend = resolve_lm_backend(os.getenv(\"ACESTEP_LM_BACKEND\"), gpu_config)"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "285-309",
+      "quote": "def resolve_lm_backend(...): backend = (requested_backend or \"\").strip().lower(); if backend not in VALID_LM_BACKENDS: backend = recommended_backend ... if lm_backend_restriction == \"pt_only\": return \"pt\""
+     },
+     {
+      "file": "acestep/api/llm_readiness.py",
+      "lines": "64-66",
+      "quote": "backend = (req.lm_backend or os.getenv(\"ACESTEP_LM_BACKEND\") or \"vllm\").strip().lower(); if backend not in {\"vllm\", \"pt\", \"mlx\"}: backend = \"vllm\""
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "79-81",
+      "quote": "backend = os.getenv(\"ACESTEP_LM_BACKEND\", \"vllm\").strip().lower(); if backend not in {\"vllm\", \"pt\", \"mlx\"}: backend = \"vllm\""
+     },
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "24-67",
+      "quote": "argparse flags are only --host, --port, --api-key, --download-source, --init-llm, --lm-model-path, --no-init (no backend flag)"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "ACESTEP_INIT_LLM semantics",
+    "claim": "Startup: unset or 'auto' -> use gpu_config.init_lm_default (GPU-tier auto-detect); truthy {1,true,yes,y,on} -> force-load LM; any other non-empty value -> force-disable. When disabled, app.state._llm_lazy_load_disabled=True, which permanently blocks per-request lazy init: requests requiring the LM error out, and use_cot_caption/use_cot_language are silently auto-disabled. The lazy-init helper additionally blocks if ACESTEP_INIT_LLM is in {0,false,no,n,off}. /format_input and /v1/create_sample return HTTP 503 'LLM not initialized. Set ACESTEP_INIT_LLM=true' when lazy load is disabled. --init-llm simply sets ACESTEP_INIT_LLM=true.",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "29-48",
+      "quote": "init_llm_env = os.getenv(\"ACESTEP_INIT_LLM\", \"\").strip().lower() ... if not init_llm_env or init_llm_env == \"auto\": ... elif init_llm_env in {\"1\", \"true\", \"yes\", \"y\", \"on\"}: ... else: init_llm = False"
+     },
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "101-106",
+      "quote": "app.state._llm_lazy_load_disabled = True ... To enable LLM: Set ACESTEP_INIT_LLM=true ... Or use --init-llm command line flag"
+     },
+     {
+      "file": "acestep/api/llm_readiness.py",
+      "lines": "40-57",
+      "quote": "if getattr(app_state, \"_llm_lazy_load_disabled\", False): ... if init_llm_env in {\"0\", \"false\", \"no\", \"n\", \"off\"}: ... LLM disabled via ACESTEP_INIT_LLM=false"
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "70-74",
+      "quote": "raise HTTPException(status_code=503, detail=\"LLM not initialized. Set ACESTEP_INIT_LLM=true in .env to enable.\")"
+     },
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "77-79",
+      "quote": "if args.init_llm: os.environ[\"ACESTEP_INIT_LLM\"] = \"true\""
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "--lm-model-path semantics and model auto-selection",
+    "claim": "--lm-model-path only sets the ACESTEP_LM_MODEL_PATH env var. At startup: env value wins; otherwise the GPU-tier recommended model is chosen (0.6B for low tiers, 1.7B for mid, 4B for unlimited); unsupported choices fall back to the recommended one. On per-request lazy init: req.lm_model_path > ACESTEP_LM_MODEL_PATH > 'acestep-5Hz-lm-0.6B'. Important for the TS client: per-request lm_model_path/lm_backend are honored ONLY when the LM has not yet been initialized \u2014 once loaded, those request fields are ignored (no reload).",
+    "evidence": [
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "55-60,81-83",
+      "quote": "\"--lm-model-path\" ... if args.lm_model_path: os.environ[\"ACESTEP_LM_MODEL_PATH\"] = args.lm_model_path"
+     },
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "52-72",
+      "quote": "lm_model_path = os.getenv(\"ACESTEP_LM_MODEL_PATH\", \"\").strip() ... recommended_lm = get_recommended_lm_model(gpu_config) ... Falling back to supported LM model"
+     },
+     {
+      "file": "acestep/api/llm_readiness.py",
+      "lines": "33-37,61-63",
+      "quote": "initialized = getattr(app_state, \"_llm_initialized\", False) ... if initialized or had_error is not None: return ... lm_model_path = (req.lm_model_path or os.getenv(\"ACESTEP_LM_MODEL_PATH\") or \"acestep-5Hz-lm-0.6B\").strip()"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "363-461",
+      "quote": "tier configs: available_lm_models [\"acestep-5Hz-lm-0.6B\"] ... recommended_lm_model \"acestep-5Hz-lm-1.7B\" ... \"acestep-5Hz-lm-4B\""
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(a) When the LM runs \u2014 triggering request fields",
+    "claim": "On POST /release_task: the LM is REQUIRED when any of thinking, sample_mode, non-empty sample_query, use_format, or full_analysis_only is set (request fails if LM unavailable). It is OPTIONALLY engaged by use_cot_caption / use_cot_language (both default TRUE; silently auto-disabled if LM unavailable). sample_mode/sample_query triggers create_sample (query rewriting + lyric generation + metadata synthesis, replacing prompt/lyrics/metas wholesale; language/instrumental hints are regex-parsed from the query). use_format triggers format_sample (rewrites caption AND lyrics, fills metas). Inside generate_music, the LM additionally runs a CoT metadata phase for every text2music request whenever it is loaded (use_cot_metas = not sample_mode, not a REST field), EXCEPT: task types cover/cover-nofsq/repaint/extract skip the LM entirely, and the CoT phase is skipped when the user supplies all four of bpm+keyscale+timesignature+duration. thinking=true (REST default false) switches infer_type to 'llm_dit' so the LM also generates the 5Hz audio codes consumed by the DiT.",
+    "evidence": [
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "87-97",
+      "quote": "require_llm = thinking or sample_mode or has_sample_query or use_format or full_analysis_only; want_llm = use_cot_caption or use_cot_language ... raise RuntimeError(f\"5Hz LM init failed: ...\")"
+     },
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "118-146",
+      "quote": "if sample_mode or has_sample_query: ... sample_result = create_sample_fn(...) ... caption = sample_result.caption; lyrics = sample_result.lyrics; bpm = sample_result.bpm ..."
+     },
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "149-187",
+      "quote": "if req.use_format and (caption or lyrics): ... format_result = format_sample_fn(...) ... caption = format_result.caption or caption; lyrics = format_result.lyrics or lyrics"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "608-634",
+      "quote": "skip_lm_tasks = {\"cover\", \"cover-nofsq\", \"repaint\", \"extract\"} ... need_lm_for_cot = params.use_cot_caption or params.use_cot_language or params.use_cot_metas; use_lm = (params.thinking or need_lm_for_cot) and llm_handler ..."
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "684",
+      "quote": "infer_type = \"llm_dit\" if need_audio_codes and params.thinking else \"dit\""
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "197",
+      "quote": "use_cot_metas=not sample_mode,"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "1245-1251,1367",
+      "quote": "has_all_metas: 'bpm' and 'keyscale' and 'timesignature' and 'duration' ... if not has_all_metas and use_cot_metas: (Phase 1 CoT)"
+     },
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "24-33,113-114",
+      "quote": "thinking: bool = False ... sample_mode: bool = False ... use_format: bool = ... default=False ... use_cot_caption: bool = True; use_cot_language: bool = True"
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "13-97",
+      "quote": "parse_description_hints: regex language mapping + 'instrumental'/'pure music'/'solo' detection"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(b) Plan-only 'Enhance' API exists as separate endpoints",
+    "claim": "Yes \u2014 the LM plan/rewrite is obtainable WITHOUT committing to generation, via three mechanisms: (1) POST /format_input \u2014 synchronous; takes prompt, lyrics, temperature, param_obj{duration,bpm,key,time_signature,language}; runs format_sample and returns {caption, lyrics, bpm, key_scale, time_signature, duration, vocal_language}. This is the natural 'Enhance' button backend. (2) POST /v1/create_sample \u2014 synchronous; takes query, instrumental, vocal_language, temperature; explicitly documented as 'the API equivalent of the Gradio UI's Simple Mode Create Sample button'; returns full plan {caption, lyrics, bpm, keyscale, duration, timesignature, vocal_language}. (3) POST /release_task with analysis_only=true \u2014 async job that runs only the LM CoT phase (infer_type='dit', no DiT, no audio) and returns metas + LM caption with lyrics echoed back. Returned plans are plain values the client can feed into a later /release_task; there is no server-side plan state. Both synchronous endpoints lazy-init the LM and honor token auth (verify_token_from_request).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "51-160",
+      "quote": "@app.post(\"/format_input\") ... \"\"\"Format prompt/lyrics via LLM and return normalized metadata fields.\"\"\" ... return wrap_response({\"caption\": ..., \"lyrics\": ..., \"bpm\": ..., \"key_scale\": ..., \"time_signature\": ..., \"duration\": ..., \"vocal_language\": ...})"
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "162-167",
+      "quote": "@app.post(\"/v1/create_sample\") ... This is the API equivalent of the Gradio UI's Simple Mode \"Create Sample\" button."
+     },
+     {
+      "file": "acestep/api/job_analysis_runtime.py",
+      "lines": "84-114",
+      "quote": "if req.analysis_only: lm_res = llm_handler.generate_with_stop_condition(..., infer_type=\"dit\", ...) ... \"generation_info\": \"Analysis Only Mode Complete\" ... \"lyrics\": params.lyrics"
+     },
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "86-100,134-148",
+      "quote": "register_sample_format_routes(...) ... register_release_task_route(...)"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(c) User-supplied lyrics pass verbatim into DiT conditioning",
+    "claim": "In the default request path (sample_mode=false, sample_query empty, use_format=false) user lyrics are NEVER rewritten, filtered, or sanitized: req.lyrics -> PreparedLlmInputs.lyrics -> GenerationParams.lyrics -> dit_input_lyrics, which is never reassigned from LM output (the LM-metadata merge only fills lyrics when the user's are empty, and the CoT phase does not emit lyrics; use_cot_lyrics is explicitly 'not consumed by inference'). The DiT receives them wrapped only as '# Languages\\n{language}\\n\\n# Lyric\\n{lyrics}<|endoftext|>' and tokenized with truncation at max_length=2048 tokens \u2014 the sole transformation. There is no strict/verbatim flag because verbatim is the only behavior absent opt-in rewrites. Caveats: (1) use_format=true DOES rewrite lyrics via the LM ('Format the user's input...' instruction; empty lyrics become '[Instrumental]'); (2) sample_mode/sample_query REPLACES lyrics wholesale; (3) when thinking=true the lyrics additionally condition the LM's audio-code generation prompt, but the DiT text conditioning still uses the user's verbatim lyrics; (4) the CAPTION is NOT verbatim by default \u2014 use_cot_caption defaults to true and replaces dit_input_caption with the LM CoT caption, so a verbatim-caption client must send use_cot_caption=false; (5) lyrics equal to '[inst]'/'[instrumental]' (or empty) set the instrumental flag.",
+    "evidence": [
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "108-116",
+      "quote": "caption = req.prompt; lyrics = req.lyrics ... original_lyrics = req.lyrics or \"\""
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "550-552,824-827",
+      "quote": "dit_input_lyrics = params.lyrics ... dit_generate_kwargs = {\"captions\": dit_input_caption, ..., \"lyrics\": dit_input_lyrics,"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "372-376",
+      "quote": "if not caption and metadata.get('caption'): caption = metadata.get('caption'); if not lyrics and metadata.get('lyrics'): lyrics = metadata.get('lyrics')  (fill-only-when-empty; result not routed to dit_input_lyrics)"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "803-807",
+      "quote": "if params.use_cot_caption: dit_input_caption = lm_generated_metadata.get(\"caption\", dit_input_caption)  (caption rewritten; no lyrics equivalent exists)"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "200",
+      "quote": "use_cot_lyrics: bool = False  # gate is read in cli.py; not consumed by inference"
+     },
+     {
+      "file": "acestep/core/generation/handler/prompt_utils.py",
+      "lines": "27-29",
+      "quote": "def _format_lyrics(self, lyrics: str, language: str) -> str: return f\"# Languages\\n{language}\\n\\n# Lyric\\n{lyrics}<|endoftext|>\""
+     },
+     {
+      "file": "acestep/core/generation/handler/conditioning_text.py",
+      "lines": "137-146",
+      "quote": "lyrics_text = self._format_lyrics(lyrics[i], actual_language); lyrics_inputs_dict = self.text_tokenizer(lyrics_text, padding=\"longest\", truncation=True, max_length=2048, ...)"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "2271-2274",
+      "quote": "format_sample_from_input: if not lyrics or not lyrics.strip(): lyrics = \"[Instrumental]\""
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "135-143",
+      "quote": "is_instrumental: lyrics_clean in (\"[inst]\", \"[instrumental]\")"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(d) No safety tuning or content filtering in the request path",
+    "claim": "A case-insensitive grep for refus/sanitiz/nsfw/safety/explicit/profanit/moderat/censor/blocklist/banned across acestep/ finds zero content-safety logic \u2014 all hits are memory-safety margins, thread-safety locks, filesystem path_safety, or the word 'explicit' meaning 'explicitly specified'. The four LM system prompts are single-line task instructions with no safety language ('Generate audio semantic tokens...', 'Understand the given musical conditions...', 'Expand the user's input...', 'Format the user's input...'). Constrained decoding is a purely structural FSM (yaml field order, BPM 30-300, duration 10-600s, valid keyscales/languages/time signatures, audio codes 0-63999) with no lexical or content constraints on caption/lyrics values. parse_lm_output does no filtering. The only request-path gating is optional API-key/token auth and audio-path validation. Note: this covers serving code only \u2014 whether the LM weights themselves were safety-tuned cannot be determined from this repo.",
+    "evidence": [
+     {
+      "file": "acestep/constants.py",
+      "lines": "119-123",
+      "quote": "DEFAULT_LM_INSTRUCTION = \"Generate audio semantic tokens based on the given conditions:\" ... DEFAULT_LM_REWRITE_INSTRUCTION = \"Format the user's input into a more detailed and specific musical description:\""
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "1707-1714",
+      "quote": "apply_chat_template([{\"role\": \"system\", \"content\": f\"# Instruction\\n{DEFAULT_LM_INSTRUCTION}\\n\\n\"}, {\"role\": \"user\", \"content\": prompt}], ...) \u2014 system prompt is only the instruction line"
+     },
+     {
+      "file": "acestep/constrained_logits_processor.py",
+      "lines": "1-46",
+      "quote": "FSM ... Enforces structured metadata generation (BPM, duration, keyscale, etc.) ... Validates numeric ranges (BPM: 30-300, Duration: 10-600s) ... MAX_AUDIO_CODE = 63999"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "2792-2910",
+      "quote": "parse_lm_output: regex extraction of <|audio_code_N|> and yaml fields only; no filtering"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "190-192",
+      "quote": "api_key = os.getenv(\"ACESTEP_API_KEY\", None); set_api_key(api_key)"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(e) LM inference settings and REST exposure",
+    "claim": "REST-exposed on /release_task (JSON, form, or multipart; aliases per PARAM_ALIASES): lm_temperature (default 0.85 via LM_DEFAULT_TEMPERATURE), lm_cfg_scale (default 2.5; applied only in the codes phase \u2014 the CoT phase hard-forces cfg_scale=1.0), lm_top_k (None/0 = disabled), lm_top_p (default 0.9; >=1.0 disables), lm_negative_prompt (default sentinel 'NO USER INPUT', used as the CFG unconditional prompt), lm_model_path and lm_backend (effective only at lazy init), allow_lm_batch (alias 'parallel_thinking'), constrained_decoding_debug. DEAD FIELDS: lm_repetition_penalty is parsed into the request model but never consumed in the API path, and constrained_decoding is parsed but build_generation_setup hardcodes use_constrained_decoding=True. Max tokens is NOT exposed: it is computed from target duration (codes phase: duration*5 codes + 10; CoT: +500 buffer; capped at max_model_len-64 where max_model_len = 4096, or 2048 in low-VRAM vllm mode). 'Thinking' is not a chat-template toggle: the <think>...</think> CoT block is structural and always used; REST `thinking` instead selects llm_dit (LM generates audio codes). Phase 1 always stops at '</think>'. The plan-only endpoints expose only `temperature` (default 0.85); /format_input and /v1/create_sample do not accept top_k/top_p over HTTP. understand/full-analysis uses fixed temperature 0.3.",
+    "evidence": [
+     {
+      "file": "acestep/api_server.py",
+      "lines": "115-117",
+      "quote": "LM_DEFAULT_TEMPERATURE = 0.85; LM_DEFAULT_CFG_SCALE = 2.5; LM_DEFAULT_TOP_P = 0.9"
+     },
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "107-125",
+      "quote": "lm_model_path ... lm_backend: Literal[\"vllm\", \"pt\", \"mlx\"] = \"vllm\" ... lm_temperature: float = 0.85; lm_cfg_scale: float = 2.5; lm_top_k: Optional[int] = None; lm_top_p: Optional[float] = 0.9; lm_repetition_penalty: float = 1.0; lm_negative_prompt: str = \"NO USER INPUT\""
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "1379-1391",
+      "quote": "CoT phase cfg: \"cfg_scale\": 1.0  # CFG must not be applied during CoT (text generation) phase"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "191-200",
+      "quote": "thinking=thinking, lm_temperature=req.lm_temperature, lm_cfg_scale=req.lm_cfg_scale, lm_top_k=lm_top_k, lm_top_p=lm_top_p, lm_negative_prompt=req.lm_negative_prompt, ... use_constrained_decoding=True,  (hardcoded; req.constrained_decoding ignored)"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "238-303",
+      "quote": "_compute_max_new_tokens: target_codes = int(effective_duration * 5); codes phase target_codes + 10; CoT target_codes + 500; min(..., self.max_model_len - 64)"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "51,1403",
+      "quote": "STOP_REASONING_TAG = \"</think>\" ... stop_at_reasoning=True,  # Always stop at </think> in Phase 1"
+     },
+     {
+      "file": "acestep/api/http/release_task_param_parser.py",
+      "lines": "9-46",
+      "quote": "PARAM_ALIASES: \"sample_query\": [\"sample_query\", \"sampleQuery\", \"description\", \"desc\"], \"allow_lm_batch\": [..., \"parallel_thinking\"], \"prompt\": [\"prompt\", \"caption\"]"
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "107,183",
+      "quote": "temperature = to_float(body.get(\"temperature\"), 0.85)  (only sampling knob on plan-only endpoints)"
+     },
+     {
+      "file": "acestep/api/job_analysis_runtime.py",
+      "lines": "60-63",
+      "quote": "understand_audio_from_codes(audio_codes=..., temperature=0.3, ...)"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Job flow context for the TS client",
+    "claim": "All generation goes through POST /release_task (queued, single worker) -> POST /query_result polling; the worker path executes run_blocking_generate which calls prepare_llm_generation_inputs (LM pre-steps) then generate_music. The OpenRouter-compatible POST /v1/chat/completions on the same server converts to the identical GenerateMusicRequest (temperature->lm_temperature, thinking passthrough, lyrics field bypasses message parsing), so it adds no new LM semantics. Default API port is 8001 (ACESTEP_API_PORT), CORS allows localhost origins only.",
+    "evidence": [
+     {
+      "file": "acestep/api_server.py",
+      "lines": "230-263",
+      "quote": "_run_one_job ... return run_blocking_generate(app_state=app.state, req=req, ... create_sample_fn=create_sample, format_sample_fn=format_sample, generate_music_fn=generate_music, ...)"
+     },
+     {
+      "file": "acestep/api/job_blocking_generation.py",
+      "lines": "93-127,161-171",
+      "quote": "prepared_inputs = prepare_llm_generation_inputs(...) ... generation_setup = build_generation_setup(...) ... analysis_result = maybe_handle_analysis_only_modes(...)"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "362-381",
+      "quote": "return GenerateMusicRequest(prompt=prompt, lyrics=resolved_lyrics, ... lm_temperature=req.temperature if req.temperature is not None else 0.85, ... thinking=req.thinking if req.thinking is not None else False,"
+     },
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "29-34",
+      "quote": "--port default int(os.getenv(\"ACESTEP_API_PORT\", \"8001\"))"
+     },
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "62-68",
+      "quote": "CORSMiddleware allow_origins [\"null\", \"http://localhost\", \"http://127.0.0.1\"] + localhost regex"
+     }
+    ],
+    "confidence": "high"
+   }
+  ],
+  "open_questions": [
+   "The checkout is not a git repo (per environment), so the v0.1.8 tag pin could not be verified against git metadata; line numbers cited are from the working tree at /Users/zathras/WAVESMITH_Project/engine/ACE-Step-1.5.",
+   "Whether the acestep-5Hz-lm weights themselves received safety/RLHF tuning is unknowable from serving code; only the absence of serving-side filtering is established. Empirically test with explicit lyrics during M0 ground-truth rendering.",
+   "Edge case: inference.py:804 reads lm_generated_metadata.get(\"caption\") inside the use_lm branch; if the LM returns empty metadata (all_metadata_list empty -> lm_generated_metadata=None) with use_cot_caption=true this would raise AttributeError \u2014 worth a defensive try/catch expectation in the client (job would fail with error).",
+   "The /format_input and /v1/create_sample endpoints hold an app-level LLM init lock but the LM generate call itself is outside the job queue \u2014 concurrent Enhance calls during a running generation share the same LLMHandler; nano-vllm has an internal generate() lock but pt/mlx paths may contend. Serialize Enhance calls client-side to be safe.",
+   "constrained_decoding and lm_repetition_penalty request fields are accepted but dead in v0.1.8 \u2014 do not surface them in the TS client."
+  ]
+ },
+ "verdicts": {
+  "verdicts": [
+   {
+    "claim": "LM model identity: 'acestep-5Hz-lm' family in 0.6B/1.7B/4B; 0.6B and 4B are standalone ACE-Step/* HF repos, 1.7B is bundled in ACE-Step/Ace-Step1.5 and is DEFAULT_LM_MODEL; Qwen3-style chat model; loaded from <checkpoints>/<lm_model_path>.",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/constants.py",
+      "lines": "194-198",
+      "quote": "LM_MODEL_NAMES = {\"0.6B\": \"acestep-5Hz-lm-0.6B\", \"1.7B\": \"acestep-5Hz-lm-1.7B\", \"4B\": \"acestep-5Hz-lm-4B\"}"
+     },
+     {
+      "file": "acestep/model_downloader.py",
+      "lines": "287-315",
+      "quote": "MAIN_MODEL_REPO = \"ACE-Step/Ace-Step1.5\" ... \"acestep-5Hz-lm-0.6B\": \"ACE-Step/acestep-5Hz-lm-0.6B\", \"acestep-5Hz-lm-4B\": \"ACE-Step/acestep-5Hz-lm-4B\" ... MAIN_MODEL_COMPONENTS = [..., \"acestep-5Hz-lm-1.7B\"] ... DEFAULT_LM_MODEL = \"acestep-5Hz-lm-1.7B\""
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "586-592",
+      "quote": "if lm_model_path is None: lm_model_path = \"acestep-5Hz-lm-1.7B\" ... full_lm_model_path = os.path.join(checkpoint_dir, lm_model_path)"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "1771-1775",
+      "quote": "because Qwen's chat template renders assistant messages containing a </think> tag"
+     },
+     {
+      "file": "checkpoints/acestep-5Hz-lm-1.7B/config.json",
+      "lines": "1-4",
+      "quote": "\"architectures\": [\"Qwen3Model\"] (bundled checkpoint in working tree corroborates Qwen3)"
+     }
+    ]
+   },
+   {
+    "claim": "Backend selection: valid backends {vllm, pt, mlx}; mlx (or vllm-on-MPS) attempts MLX first with PyTorch fallback; vllm on non-CUDA becomes pt; vllm falls back to pt on preflight warning or free VRAM < 2GB, and to MLX-then-pt if vllm init throws on MPS; MPS config sets recommended_backend='mlx' and lm_backend_restriction='pt_mlx_only'.",
+    "verdict": "partially_correct",
+    "correction": "Everything checks out EXCEPT the 'MLX-then-pt if vllm init throws on MPS' fallback: that code (llm_inference.py:753-759) is unreachable. With backend='vllm' and device='mps', line 678 routes to the MLX attempt first; if that fails, line 705-709 rewrites backend to 'pt' for any non-CUDA device BEFORE _initialize_5hz_lm_vllm can run, and _initialize_5hz_lm_vllm itself bails when CUDA is unavailable (line 792-795). So the vllm-failure branch can only execute with device='cuda', where the `device == \"mps\"` condition at line 754 is always false. The actual MPS sequence for requested 'vllm' is: try MLX (if available) -> rewrite to pt -> pt load.",
+    "evidence": [
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "41",
+      "quote": "VALID_LM_BACKENDS = {\"vllm\", \"pt\", \"mlx\"}"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "678-709",
+      "quote": "if backend == \"mlx\" or (backend == \"vllm\" and device == \"mps\"): ... # else: backend was \"vllm\" on MPS, continue to vllm attempt below ... if backend == \"vllm\" and device != \"cuda\": ... backend = \"pt\""
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "33,735-737",
+      "quote": "VRAM_SAFE_FREE_GB = 2.0 ... if device == \"cuda\" and free_gb < VRAM_SAFE_FREE_GB: ... falling back to PyTorch backend"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "753-759",
+      "quote": "if device == \"mps\" and self._is_mlx_available(): (inside the vllm-failure branch, only reachable when device == \"cuda\" \u2014 dead code)"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "862-868",
+      "quote": "lm_backend_restriction=\"pt_mlx_only\" if _mps ... recommended_backend=\"mlx\" if _mps"
+     }
+    ]
+   },
+   {
+    "claim": "ACESTEP_LM_BACKEND semantics: startup resolves via resolve_lm_backend (invalid/missing -> recommended_backend, then restrictions); per-request lazy init precedence is req.lm_backend > ACESTEP_LM_BACKEND > 'vllm'; /format_input and /v1/create_sample read only the env var; no --lm-backend CLI flag.",
+    "verdict": "partially_correct",
+    "correction": "The stated per-request precedence is the literal code expression, but it is misleading: GenerateMusicRequest.lm_backend is a non-optional Literal defaulting to 'vllm' (release_task_models.py:109) and build_generate_music_request always fills it with parser.str('lm_backend', 'vllm') (release_task_request_builder.py:87), so req.lm_backend is ALWAYS truthy and ACESTEP_LM_BACKEND is never consulted on the /release_task lazy-init path (llm_readiness.py:64). The env var only matters at startup init and on /format_input//v1/create_sample//reinitialize. Also note the per-request path validates only against the literal set and does NOT apply resolve_lm_backend's GPU restrictions (pt_only/pt_mlx_only); non-CUDA handling happens later inside LLMHandler.initialize. To get mlx on a Mac via lazy init, a client must explicitly send lm_backend='mlx' or rely on the vllm+mps auto-MLX path in LLMHandler.initialize.",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "74",
+      "quote": "lm_backend = resolve_lm_backend(os.getenv(\"ACESTEP_LM_BACKEND\"), gpu_config)"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "285-309",
+      "quote": "if backend not in VALID_LM_BACKENDS: backend = recommended_backend ... if lm_backend_restriction == \"pt_only\": return \"pt\" ... pt_mlx_only and backend == \"vllm\" -> fallback"
+     },
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "109",
+      "quote": "lm_backend: Literal[\"vllm\", \"pt\", \"mlx\"] = \"vllm\""
+     },
+     {
+      "file": "acestep/api/http/release_task_request_builder.py",
+      "lines": "87",
+      "quote": "lm_backend=parser.str(\"lm_backend\", \"vllm\"),"
+     },
+     {
+      "file": "acestep/api/llm_readiness.py",
+      "lines": "64-66",
+      "quote": "backend = (req.lm_backend or os.getenv(\"ACESTEP_LM_BACKEND\") or \"vllm\").strip().lower()"
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "79-81,201-203",
+      "quote": "backend = os.getenv(\"ACESTEP_LM_BACKEND\", \"vllm\").strip().lower()"
+     },
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "23-68",
+      "quote": "only --host, --port, --api-key, --download-source, --init-llm, --lm-model-path, --no-init"
+     }
+    ]
+   },
+   {
+    "claim": "ACESTEP_INIT_LLM semantics: unset/'auto' -> gpu_config.init_lm_default; truthy {1,true,yes,y,on} -> force-load; any other non-empty value -> force-disable; disabled sets _llm_lazy_load_disabled blocking lazy init (LM-required requests fail, use_cot_* auto-disabled); lazy helper also blocks on {0,false,no,n,off}; plan endpoints return 503; --init-llm sets ACESTEP_INIT_LLM=true.",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "29-48",
+      "quote": "init_llm_env = os.getenv(\"ACESTEP_INIT_LLM\", \"\").strip().lower() ... if not init_llm_env or init_llm_env == \"auto\": ... elif init_llm_env in {\"1\", \"true\", \"yes\", \"y\", \"on\"}: ... else: init_llm = False"
+     },
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "101-106",
+      "quote": "app.state._llm_lazy_load_disabled = True ... Set ACESTEP_INIT_LLM=true ... Or use --init-llm command line flag"
+     },
+     {
+      "file": "acestep/api/llm_readiness.py",
+      "lines": "40-57",
+      "quote": "if getattr(app_state, \"_llm_lazy_load_disabled\", False): ... if init_llm_env in {\"0\", \"false\", \"no\", \"n\", \"off\"}: ... LLM disabled via ACESTEP_INIT_LLM=false"
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "70-74,192-196",
+      "quote": "raise HTTPException(status_code=503, detail=\"LLM not initialized. Set ACESTEP_INIT_LLM=true in .env to enable.\")"
+     },
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "77-79",
+      "quote": "if args.init_llm: os.environ[\"ACESTEP_INIT_LLM\"] = \"true\""
+     },
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "96-106",
+      "quote": "if require_llm and not llm_available: raise RuntimeError(f\"5Hz LM init failed: ...\") ... use_cot_caption = False; use_cot_language = False"
+     }
+    ]
+   },
+   {
+    "claim": "--lm-model-path only sets ACESTEP_LM_MODEL_PATH; startup picks env value, else GPU-tier recommended model (0.6B low / 1.7B mid / 4B unlimited) with fallback on unsupported; per-request lazy init: req.lm_model_path > env > 'acestep-5Hz-lm-0.6B'; per-request lm_model_path/lm_backend honored only before first init (no reload).",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "55-60,81-83",
+      "quote": "--lm-model-path ... if args.lm_model_path: os.environ[\"ACESTEP_LM_MODEL_PATH\"] = args.lm_model_path"
+     },
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "52-72",
+      "quote": "lm_model_path = os.getenv(\"ACESTEP_LM_MODEL_PATH\", \"\").strip() ... recommended_lm = get_recommended_lm_model(gpu_config) ... Falling back to supported LM model"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "363-461,1411-1425",
+      "quote": "tier3/4 recommended_lm_model \"acestep-5Hz-lm-0.6B\"; tier5/6a/6b \"acestep-5Hz-lm-1.7B\"; unlimited \"acestep-5Hz-lm-4B\"; get_recommended_lm_model returns available_lm_models[-1]"
+     },
+     {
+      "file": "acestep/api/llm_readiness.py",
+      "lines": "34-37,61-63",
+      "quote": "if initialized or had_error is not None: return ... lm_model_path = (req.lm_model_path or os.getenv(\"ACESTEP_LM_MODEL_PATH\") or \"acestep-5Hz-lm-0.6B\").strip()"
+     }
+    ]
+   },
+   {
+    "claim": "(a) LM trigger matrix on /release_task: required by thinking/sample_mode/sample_query/use_format/full_analysis_only; optional via use_cot_caption/use_cot_language (default true, auto-disabled); sample_mode replaces prompt/lyrics/metas wholesale with hint parsing; use_format rewrites caption+lyrics; generate_music runs CoT for every text2music request when LM loaded except cover/cover-nofsq/repaint/extract and when all four metas supplied; thinking=true (REST default false) switches to llm_dit.",
+    "verdict": "partially_correct",
+    "correction": "Three omissions: (1) text2music with flow_edit_morph=true ALSO skips the LM entirely (inference.py:622-633: morph_on_text2music treated like a skip task), so the exception list is incomplete; (2) the CoT phase runs not just for text2music but for any non-skip task \u2014 lego and complete also engage the LM when loaded (skip set is only {cover, cover-nofsq, repaint, extract} plus the morph case); (3) thinking=true yields infer_type='llm_dit' only when the user has NOT supplied audio_code_string \u2014 `infer_type = \"llm_dit\" if need_audio_codes and params.thinking else \"dit\"` where need_audio_codes = not user_provided_audio_codes (inference.py:564-570,684). Everything else verified, including use_cot_metas=not sample_mode (job_generation_setup.py:197) and the has_all_metas skip (llm_inference.py:1245-1251,1367).",
+    "evidence": [
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "87-106",
+      "quote": "require_llm = thinking or sample_mode or has_sample_query or use_format or full_analysis_only; want_llm = use_cot_caption or use_cot_language"
+     },
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "118-146",
+      "quote": "if sample_mode or has_sample_query: ... caption = sample_result.caption; lyrics = sample_result.lyrics; bpm = sample_result.bpm ..."
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "612-634",
+      "quote": "skip_lm_tasks = {\"cover\", \"cover-nofsq\", \"repaint\", \"extract\"} ... morph_on_text2music = (params.task_type == \"text2music\" and params.flow_edit_morph) ... skip_lm = params.task_type in skip_lm_tasks or morph_on_text2music"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "564-570,684",
+      "quote": "need_audio_codes = not user_provided_audio_codes ... infer_type = \"llm_dit\" if need_audio_codes and params.thinking else \"dit\""
+     },
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "27,113-114",
+      "quote": "thinking: bool = False ... use_cot_caption: bool = True; use_cot_language: bool = True"
+     }
+    ]
+   },
+   {
+    "claim": "(b) Plan-only 'Enhance' exists: POST /format_input (sync, prompt/lyrics/temperature/param_obj -> caption/lyrics/bpm/key_scale/time_signature/duration/vocal_language), POST /v1/create_sample (sync, query/instrumental/vocal_language/temperature -> full plan, 'API equivalent of Gradio Simple Mode Create Sample'), and analysis_only=true on /release_task (LM CoT only, infer_type='dit', no audio, lyrics echoed); plans are stateless; both sync endpoints lazy-init the LM and honor token auth.",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "51-160",
+      "quote": "@app.post(\"/format_input\") ... return wrap_response({\"caption\": ..., \"lyrics\": ..., \"bpm\": ..., \"key_scale\": ..., \"time_signature\": ..., \"duration\": ..., \"vocal_language\": ...})"
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "162-246",
+      "quote": "@app.post(\"/v1/create_sample\") ... This is the API equivalent of the Gradio UI's Simple Mode \"Create Sample\" button ... returns caption/lyrics/bpm/keyscale/duration/timesignature/vocal_language"
+     },
+     {
+      "file": "acestep/api/job_analysis_runtime.py",
+      "lines": "84-114",
+      "quote": "if req.analysis_only: lm_res = llm_handler.generate_with_stop_condition(..., infer_type=\"dit\", ...) ... \"generation_info\": \"Analysis Only Mode Complete\" ... \"lyrics\": params.lyrics"
+     },
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "86-100,134-148",
+      "quote": "register_sample_format_routes(...) ... register_release_task_route(...)"
+     }
+    ]
+   },
+   {
+    "claim": "(c) User lyrics flow verbatim into DiT conditioning in the default path: req.lyrics -> PreparedLlmInputs -> GenerationParams -> dit_input_lyrics, never reassigned from LM output; sole transformation is the '# Languages\\n{language}\\n\\n# Lyric\\n{lyrics}<|endoftext|>' wrapper + 2048-token truncation; use_format/sample_mode are the only opt-in rewrites; caption is NOT verbatim by default (use_cot_caption=true replaces it); '[inst]'/'[instrumental]'/empty sets instrumental flag.",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "108-116",
+      "quote": "caption = req.prompt; lyrics = req.lyrics ... original_lyrics = req.lyrics or \"\""
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "550-552,824-827",
+      "quote": "dit_input_lyrics = params.lyrics ... dit_generate_kwargs = {\"captions\": dit_input_caption, ..., \"lyrics\": dit_input_lyrics,"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "372-376,779-801",
+      "quote": "if not lyrics and metadata.get('lyrics'): lyrics = metadata.get('lyrics') \u2014 merged value lands only in params.cot_lyrics (line 801), never in dit_input_lyrics"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "200,803-805",
+      "quote": "use_cot_lyrics: bool = False  # gate is read in cli.py; not consumed by inference ... if params.use_cot_caption: dit_input_caption = lm_generated_metadata.get(\"caption\", dit_input_caption)"
+     },
+     {
+      "file": "acestep/core/generation/handler/prompt_utils.py",
+      "lines": "27-29",
+      "quote": "return f\"# Languages\\n{language}\\n\\n# Lyric\\n{lyrics}<|endoftext|>\""
+     },
+     {
+      "file": "acestep/core/generation/handler/conditioning_text.py",
+      "lines": "137-144",
+      "quote": "lyrics_text = self._format_lyrics(lyrics[i], actual_language); ... truncation=True, max_length=2048"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "2271-2274",
+      "quote": "if not lyrics or not lyrics.strip(): lyrics = \"[Instrumental]\""
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "135-143",
+      "quote": "return lyrics_clean in (\"[inst]\", \"[instrumental]\")"
+     }
+    ]
+   },
+   {
+    "claim": "(d) No safety tuning or content filtering in the request path: greps find zero content-safety logic; LM system prompts are single-line task instructions; constrained decoding is a purely structural FSM (BPM 30-300, duration 10-600, keyscales/languages/timesigs, audio codes 0-63999) with no lexical constraints; parse_lm_output does no filtering; only gating is API-key/token auth and audio-path validation.",
+    "verdict": "confirmed",
+    "correction": "One precision worth adding (not an error): the FSM's effective duration ceiling at runtime is GPU-tier dependent \u2014 the processor is constructed with max_duration=gpu_config.max_duration_with_lm (480s on most tiers, 240s tier1, 600s only on 'unlimited'), so 10-600 is the absolute bound, not the effective one (llm_inference.py:621-631).",
+    "evidence": [
+     {
+      "file": "acestep/constants.py",
+      "lines": "119-123",
+      "quote": "DEFAULT_LM_INSTRUCTION = \"Generate audio semantic tokens based on the given conditions:\" ... DEFAULT_LM_REWRITE_INSTRUCTION = \"Format the user's input into a more detailed and specific musical description:\""
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "1707-1714",
+      "quote": "apply_chat_template([{\"role\": \"system\", \"content\": f\"# Instruction\\n{DEFAULT_LM_INSTRUCTION}\\n\\n\"}, ...]) \u2014 system prompt is only the instruction line"
+     },
+     {
+      "file": "acestep/constrained_logits_processor.py",
+      "lines": "1-47",
+      "quote": "FSM ... Validates numeric ranges (BPM: 30-300, Duration: 10-600s) ... MAX_AUDIO_CODE = 63999"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "2792-2910",
+      "quote": "parse_lm_output: regex extraction of <|audio_code_N|> and yaml-ish fields only; no filtering"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "190-192",
+      "quote": "api_key = os.getenv(\"ACESTEP_API_KEY\", None); set_api_key(api_key)"
+     }
+    ]
+   },
+   {
+    "claim": "(e) LM settings REST exposure: lm_temperature 0.85, lm_cfg_scale 2.5 (codes phase only; CoT forces 1.0), lm_top_k None/0=disabled, lm_top_p 0.9 (>=1.0 disables), lm_negative_prompt 'NO USER INPUT' sentinel, lm_model_path/lm_backend effective only at lazy init, allow_lm_batch (alias parallel_thinking), constrained_decoding_debug; lm_repetition_penalty and constrained_decoding are dead; max tokens duration-derived (codes: dur*5+10, CoT: +500, cap max_model_len-64, 4096 or 2048 low-VRAM vllm); <think> CoT structural, Phase 1 stops at </think>; plan endpoints expose only temperature; understand uses fixed 0.3.",
+    "verdict": "partially_correct",
+    "correction": "Two errors: (1) lm_top_p >= 1.0 does NOT disable top-p over REST \u2014 prepare_llm_generation_inputs normalizes any falsy or >=1.0 value back to 0.9 (`lm_top_p = req.lm_top_p if req.lm_top_p and req.lm_top_p < 1.0 else 0.9`, llm_generation_inputs.py:65), so the GenerationParams-level 'None if >= 1.0' disable branch (inference.py:649) is unreachable from the API; top-p is always active in (0,1) for /release_task. (2) allow_lm_batch is a third dead field in the REST path: it is parsed into GenerationConfig.allow_lm_batch (job_generation_setup.py:206) but generate_music never reads it (only docstring/field-def hits in inference.py:231,244); the API path always chunk-batches via lm_batch_chunk_size=8 (inference.py:687). It is consumed only by Gradio UI code. Also worth noting: with thinking=false (REST default), lm_cfg_scale and lm_negative_prompt are inert since CFG applies only in the never-run Phase-2 codes generation. All other points verified, including the 0.85/2.5/0.9 defaults (api_server.py:115-117), CoT cfg_scale=1.0 (llm_inference.py:1379-1391), token math (llm_inference.py:266-303), max_model_len 4096/2048 (llm_inference.py:62,819-822), and temperature-only plan endpoints (sample_format_routes.py:107,183).",
+    "evidence": [
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "64-65",
+      "quote": "lm_top_k = req.lm_top_k if req.lm_top_k and req.lm_top_k > 0 else 0; lm_top_p = req.lm_top_p if req.lm_top_p and req.lm_top_p < 1.0 else 0.9"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "231,244,687",
+      "quote": "allow_lm_batch: bool = False (defined, never read by generate_music) ... max_inference_batch_size = int(config.lm_batch_chunk_size) if config.lm_batch_chunk_size > 0 else actual_batch_size"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "191-211",
+      "quote": "lm_temperature=req.lm_temperature, ... use_constrained_decoding=True, (req.constrained_decoding and req.lm_repetition_penalty never forwarded)"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "1379-1391,1403",
+      "quote": "\"cfg_scale\": 1.0, # CFG must not be applied during CoT ... stop_at_reasoning=True,  # Always stop at </think> in Phase 1"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "277-301,819-822",
+      "quote": "target_codes = int(effective_duration * 5); codes: target_codes + 10; cot: target_codes + 500; min(..., self.max_model_len - 64) ... if low_gpu_memory_mode: self.max_model_len = 2048 else 4096"
+     },
+     {
+      "file": "acestep/api/job_analysis_runtime.py",
+      "lines": "60-63",
+      "quote": "understand_audio_from_codes(audio_codes=..., temperature=0.3, ...)"
+     }
+    ]
+   },
+   {
+    "claim": "Job flow: POST /release_task (queued, single worker) -> POST /query_result polling; worker runs run_blocking_generate -> prepare_llm_generation_inputs -> generate_music; /v1/chat/completions converts to the identical GenerateMusicRequest adding no new LM semantics; default port 8001; CORS localhost-only.",
+    "verdict": "partially_correct",
+    "correction": "Structure, port, and CORS confirmed; two precision fixes: (1) worker count defaults to 1 but is env-configurable via ACESTEP_QUEUE_WORKERS (api_server.py:195); uvicorn itself is pinned to workers=1 (server_cli.py:90-96). (2) The OpenRouter adapter does NOT use identical defaults: lm_cfg_scale defaults to 2.0 there (openrouter_models.py:109) vs 2.5 on /release_task, and batch_size defaults to 1 (openrouter_adapter.py:389) vs 2 on /release_task (job_generation_setup.py:203). The conversion mechanics (temperature->lm_temperature 0.85 fallback, thinking passthrough default False, lyrics field bypassing message parsing) are confirmed.",
+    "evidence": [
+     {
+      "file": "acestep/api_server.py",
+      "lines": "194-195,230-263",
+      "quote": "WORKER_COUNT = int(os.getenv(\"ACESTEP_QUEUE_WORKERS\", \"1\")) ... run_blocking_generate(app_state=app.state, req=req, ...)"
+     },
+     {
+      "file": "acestep/api/job_blocking_generation.py",
+      "lines": "93-127,161-185",
+      "quote": "prepared_inputs = prepare_llm_generation_inputs(...) ... build_generation_setup(...) ... maybe_handle_analysis_only_modes(...)"
+     },
+     {
+      "file": "acestep/openrouter_models.py",
+      "lines": "109",
+      "quote": "lm_cfg_scale: float = Field(default=2.0, description=\"LM classifier-free guidance scale\")"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "362-389",
+      "quote": "lm_temperature=req.temperature if req.temperature is not None else 0.85 ... thinking=req.thinking if req.thinking is not None else False ... batch_size=req.batch_size if req.batch_size is not None else 1"
+     },
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "29-34,90-96",
+      "quote": "--port default int(os.getenv(\"ACESTEP_API_PORT\", \"8001\")) ... uvicorn.run(..., workers=1)"
+     },
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "62-68",
+      "quote": "allow_origins=[\"null\", \"http://localhost\", \"http://127.0.0.1\"], allow_origin_regex=r\"^https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?$\""
+     }
+    ]
+   }
+  ],
+  "missed": [
+   "Response envelope: /release_task, /query_result, /format_input and /v1/create_sample all wrap payloads as {data, code, error, timestamp, extra} (acestep/api_server.py:120-128). Critically, LM generation failures on the plan endpoints come back as HTTP 200 with body code=500 (sample_format_routes.py:144-146, 234-235); only LM init failures raise real HTTP 500/503. A TS client must check body.code, not just HTTP status.",
+   "analysis_only is NOT in the require_llm set (llm_generation_inputs.py:87). If the LM is uninitialized/disabled, run_blocking_generate passes llm_handler=None (job_blocking_generation.py:129-130) and the analysis_only branch calls None.generate_with_stop_condition (job_analysis_runtime.py:84-85), so the job fails with an AttributeError rather than a clean 'LM required' message.",
+   "On MPS, cover/cover-nofsq requests proactively UNLOAD the LM before generation to free unified memory (llm_generation_inputs.py:75-85: llm_handler.unload(); app_state._llm_initialized = False). The next LM-needing request triggers lazy re-init \u2014 relevant latency/behavior on the target Mac deployment.",
+   "Lazy init never retries after a failure: ensure_llm_ready_for_request returns immediately when _llm_init_error is already set (llm_readiness.py:34-37), so one transient init failure permanently disables LM features (use_cot_* silently off, LM-required requests erroring) until POST /reinitialize or process restart. POST /reinitialize (reinitialize_route.py:63-65) can reload the LLM using env settings.",
+   "batch_size on /release_task defaults to 2 when omitted (job_generation_setup.py:203), so a single-song client must send batch_size=1. GPU-tier max_batch_size_with_lm/without_lm values exist in gpu_config (gpu_config.py:316-470) but are NOT enforced anywhere in the API request path (only printed at startup, startup_model_init.py:199-200).",
+   "The constrained-decoding duration ceiling is GPU-dependent: the FSM processor is built with max_duration = gpu_config.max_duration_with_lm (llm_inference.py:621-631) \u2014 480s on tiers 2-6b, 240s tier1, 600s 'unlimited' \u2014 and _compute_max_new_tokens clamps target duration to the same ceiling (llm_inference.py:270-278). Requesting duration above the tier ceiling is silently clamped in the LM path.",
+   "sample_mode with an empty sample_query substitutes the literal query 'NO USER INPUT' (llm_generation_inputs.py:119), and req.vocal_language overrides the regex-parsed language hint only when it is not 'en'/'unknown'/'' (llm_generation_inputs.py:122-125) \u2014 i.e., the REST default vocal_language='en' is ignored in sample mode, so an English-language constraint must be inferred from the query text.",
+   "is_format_caption is a third parsed-but-dead REST field (release_task_models.py:115, release_task_request_builder.py:98): no consumer anywhere in the API path \u2014 like lm_repetition_penalty and constrained_decoding, it should not be surfaced in the TS client.",
+   "Additional LM env knobs the analyst did not list: ACESTEP_LM_DEVICE (defaults to handler device at startup, 'auto' on lazy init) and ACESTEP_LM_OFFLOAD_TO_CPU (startup_llm_init.py:75-77; llm_readiness.py:75-76; sample_format_routes.py:90-91). Also ACESTEP_CHECKPOINTS_DIR / ACESTEP_PROJECT_ROOT control where <checkpoints> resolves (model_downloader.py:329-359) \u2014 though llm_readiness/sample_format_routes hardcode os.path.join(project_root, 'checkpoints').",
+   "GenerationParams.thinking defaults to True at the dataclass level (inference.py:192) while the REST model defaults to False (release_task_models.py:27) \u2014 only the REST default matters for the HTTP client, but anyone calling generate_music directly inherits LM-codes mode by default.",
+   "full_analysis_only requires src_audio_path: it first encodes the source audio to codes via dit_handler.convert_src_audio_to_codes and fails the job if that errors (job_analysis_runtime.py:54-58) before running understand_audio_from_codes at fixed temperature 0.3 \u2014 it is an audio-analysis endpoint, not a text-plan endpoint.",
+   "On MPS the LM is kept in float32 for the pt backend (NaN/inf risk in fp16; llm_inference.py:566-583), and Phase-2 codes generation builds its prompt from caption+lyrics+CoT via build_formatted_prompt_with_cot with the training-aligned open assistant turn '<think>...</think>\\n\\n' (llm_inference.py:1485-1490, 1783-1800) \u2014 the user's lyrics condition LM code generation whenever thinking=true."
+  ]
+ }
+}

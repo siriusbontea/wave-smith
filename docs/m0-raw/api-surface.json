@@ -1,0 +1,786 @@
+{
+ "key": "api-surface",
+ "mapped": {
+  "auth": "API key comes from `--api-key` CLI flag OR `ACESTEP_API_KEY` env. server_cli.py:36-39 defines the flag (default = env), and server_cli.py:70-71 writes the flag value back into `os.environ[\"ACESTEP_API_KEY\"]` BEFORE uvicorn starts; create_app() reads `ACESTEP_API_KEY` and calls set_api_key() (api_server.py:190-192). If unset, ALL auth checks are disabled (acestep/api/http/auth.py:39-40, 67-68). Two enforcement paths: (1) `verify_api_key` FastAPI dependency for header-only endpoints (auth.py:57-75): requires `Authorization` header, accepts either the raw key or `Bearer <key>` (prefix stripped at auth.py:73); 401 `{\"detail\":\"Missing Authorization header\"}` or `{\"detail\":\"Invalid API key\"}`. (2) `verify_token_from_request` for legacy body-parsing endpoints (/release_task, /query_result, /create_random_sample, /format_input, /v1/create_sample) (auth.py:23-54): checks body field `ai_token` first, else `Authorization` header (Bearer or raw); 401 `Invalid ai_token` / `Invalid API key` / `Missing ai_token or Authorization header`. IMPORTANT EXCEPTION: the OpenRouter routes `POST /v1/chat/completions` and `GET /v1/models` have NO auth dependency at all (openrouter_adapter.py:594, 653). CORS: only localhost origins allowed \u2014 allow_origins [\"null\",\"http://localhost\",\"http://127.0.0.1\"] plus regex ^https?://(localhost|127.0.0.1)(:port)?$, methods GET/POST/OPTIONS, headers Content-Type/Authorization (route_setup.py:62-68). No request-body size limit middleware exists anywhere (only CORSMiddleware is added, route_setup.py:62); uvicorn/Starlette impose no default body cap, multipart uploads are streamed to temp files in 1MB chunks (release_task_audio_paths.py:76-81).",
+  "endpoints": [
+   {
+    "method": "POST",
+    "path": "/release_task",
+    "purpose": "Create an async music-generation job (the primary generation endpoint). Also handles analysis-only modes (LM metadata plan, full audio analysis, code extraction) via flags.",
+    "request": "Accepts application/json, multipart/form-data, application/x-www-form-urlencoded, or raw-body JSON/querystring sniffing; otherwise 415 (release_task_request_parser.py:88-205). Every field has aliases (PARAM_ALIASES, release_task_param_parser.py:9-46) and may also be supplied inside nested `param_obj` (JSON string or object) or `metas`/`meta`/`metadata`/`user_metadata` (release_task_param_parser.py:104-141). Canonical fields (type / default / required / validation): ai_token: str, optional auth (auth.py:42-46). prompt (alias caption): str \"\" \u2014 caption text. global_caption: str \"\". lyrics: str \"\" (\"[inst]\"/\"[instrumental]\"/empty => instrumental, server_utils.py:135-143). thinking: bool false \u2014 LM generates audio codes (lm-dit). sample_mode: bool false \u2014 LM auto-generates caption/lyrics/metas. sample_query (aliases sampleQuery, description, desc): str \"\" \u2014 triggers create_sample when non-empty. use_format (alias format): bool false \u2014 LM-enhance caption/lyrics. model (aliases model_name, dit_model): str|null \u2014 DiT model selection. bpm: int|null. key_scale (aliases keyscale, key): str \"\". time_signature (alias timesignature): str \"\". vocal_language (alias language): str \"en\". inference_steps: int 8. guidance_scale: float 7.0. use_random_seed: bool true. seed: int|str -1 \u2014 comma-separated string gives per-take seeds (job_generation_setup.py:80-96); used only when use_random_seed=false. reference_audio_path (alias ref_audio_path): str|null \u2014 absolute paths only allowed inside system temp dir, traversal blocked, else 400 (release_task_audio_paths.py:14-46). src_audio_path (alias ctx_audio_path): str|null \u2014 same validation. In multipart, file fields `ref_audio`/`reference_audio` and `ctx_audio`/`src_audio` are saved to temp files and used instead (release_task_request_parser.py:110-126). audio_duration (aliases duration, target_duration): float|null \u2014 null/<=0 => auto (-1 sentinel, job_generation_setup.py:168). batch_size: int|null \u2014 NUMBER OF TAKES; defaults to 2 when omitted (job_generation_setup.py:203). repainting_start: float 0.0. repainting_end: float|null (null=>-1). instruction: str = \"Fill the audio semantic mask based on the given conditions:\" (constants.py:119); auto-resolved per task_type/track_name/track_classes (job_generation_setup.py:25-67). audio_cover_strength (alias cover_strength): float 1.0. cover_noise_strength: float 0.0 (0=pure noise, 1=closest to source). audio_code_string (alias audio_codes): str \"\" \u2014 pre-computed semantic codes, skips LM code generation. task_type: str \"text2music\" \u2014 one of text2music|repaint|cover|cover-nofsq|extract|lego|complete (constants.py:82,89; turbo models support only the first 4). chunk_mask_mode: Literal explicit|auto, default auto (pydantic-validated, release_task_models.py:65). repaint_latent_crossfade_frames: int 10. repaint_wav_crossfade_sec: float 0.0. repaint_mode: Literal conservative|balanced|aggressive, default balanced. repaint_strength: float 0.5, ge=0.0 le=1.0 (release_task_models.py:78-83). analysis_only: bool false \u2014 LM metadata plan only, no audio. full_analysis_only: bool false \u2014 encode src audio + LM understanding. extract_codes_only: bool false \u2014 requires src_audio_path; returns codes only. use_adg: bool false. cfg_interval_start: float 0.0. cfg_interval_end: float 1.0. infer_method: str \"ode\" (\"ode\"|\"sde\", not enforced). shift: float 3.0 (doc range 1.0-5.0, base models only; not enforced). timesteps: str|null \u2014 comma-separated floats; overrides inference_steps+shift (server_utils.py:124-132). audio_format: str \"mp3\" \u2014 flac|mp3|opus|aac|wav|wav32; unsupported values silently fall back to flac (audio_utils.py:129-132). use_tiled_decode: bool true. lm_model_path: str|null. lm_backend: Literal vllm|pt|mlx default vllm (release_task_models.py:109). constrained_decoding: bool true. constrained_decoding_debug: bool false. use_cot_caption (alias cot_caption): bool true. use_cot_language (alias cot_language): bool true. is_format_caption: bool false. allow_lm_batch (alias parallel_thinking): bool true. track_name: str|null. track_classes (alias instruments): list[str]|null (bare string coerced to 1-elem list, release_task_request_builder.py:35-37). lm_temperature: float 0.85. lm_cfg_scale: float 2.5. lm_top_k: int|null (<=0 treated as off). lm_top_p: float 0.9 (>=1.0 treated as off). lm_repetition_penalty: float 1.0. lm_negative_prompt: str \"NO USER INPUT\".",
+    "response": "Standard envelope {data, code:200, error:null, timestamp:<ms epoch int>, extra:null} (api_server.py:120-128) with data = {task_id: str(uuid4), status: \"queued\", queue_position: int (1-based pending count)} (release_task_route.py:85). Errors: 429 {detail:\"Server busy: queue is full\"} when asyncio.Queue full (maxsize env ACESTEP_QUEUE_MAXSIZE default 200; release_task_route.py:68-74, api_server.py:194); 400 malformed JSON / non-object payload / bad audio path; 401 auth; 415 unsupported content type.",
+    "evidence": "acestep/api/http/release_task_route.py:47-85; acestep/api/http/release_task_models.py:12-131; acestep/api/http/release_task_request_builder.py:39-104; acestep/api/http/release_task_param_parser.py:9-46; acestep/api/http/release_task_request_parser.py:88-205; acestep/api/job_generation_setup.py:154-211; acestep/api_server.py:109-128,194",
+    "notes": "Default batch_size=2 means TWO takes per request unless you pass batch_size=1 explicitly. Wired into api_server via configure_api_routes (route_setup.py:134-148)."
+   },
+   {
+    "method": "POST",
+    "path": "/query_result",
+    "purpose": "Batch-poll task status/results for one or more task IDs.",
+    "request": "JSON or form body: {task_id_list: JSON-array-string or actual list of task_id strings (default \"[]\"; non-parseable => []), ai_token?: str} (query_result_route.py:47-55, query_result_service.py:10-26).",
+    "response": "Envelope with data = ordered list, one item per task_id: {task_id: str, result: str (JSON-ENCODED array \u2014 must be JSON.parse'd by client), status: int, progress_text?: str (last captured server log line)}. status int: 0=queued/running, 1=succeeded, 2=failed/unknown (server_utils.py:10,118-121). Unknown task_id => {task_id, result:\"[]\", status:0} (query_result_service.py:195). Parsed `result` array items \u2014 RUNNING (from local cache): [{file:\"\", wave:\"\", status:0, create_time:int(s), env:\"development\", progress: float 0..1, stage: str}] (local_cache_updates.py:148-156); store-derived running/failed adds prompt:\"\", lyrics:\"\", metas:{}, progress, stage, error: str|null (full Python traceback on failure) (query_result_service.py:119-131). SUCCESS: one element PER GENERATED TAKE: {file: \"/v1/audio?path=<url-encoded absolute path>\" (already a download URL), wave:\"\", status:1, create_time:int, env, prompt: str (final caption), lyrics: str (final lyrics), metas:{bpm, duration, genres, keyscale, timesignature} (cache variant also has metas.prompt/metas.lyrics + top-level generation_info: str(markdown timing summary), seed_value:\"s1,s2\", lm_model, dit_model, progress:1.0, stage:\"succeeded\") } (query_result_service.py:84-117; local_cache_updates.py:79-114). analysis/extract modes: result_data=[full result dict] with status_message \"Full Hardware Analysis Success\" or \"Audio Codes Extraction Success\", audio_codes, metas, bpm/keyscale/duration/etc (query_result_service.py:76-80; job_analysis_runtime.py:45-114). Cache-staleness rule: running item older than 3600s reported as status 2 (query_result_service.py:53-54, api_server.py:111).",
+    "evidence": "acestep/api/http/query_result_route.py:35-66; acestep/api/http/query_result_service.py:29-196; acestep/api/jobs/local_cache_updates.py:53-158; acestep/api/server_utils.py:10,118-121"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/audio",
+    "purpose": "Download generated audio bytes by file path (the only audio-serving endpoint).",
+    "request": "Query param `path`: URL-encoded absolute file path (exactly what /query_result returns in the `file` field / audio_paths). Auth: Authorization header (Depends verify_api_key).",
+    "response": "FileResponse bytes. media_type by extension: .mp3 audio/mpeg, .wav audio/wav, .flac audio/flac, .ogg audio/ogg, default audio/mpeg. 403 if resolved path is outside app.state.temp_audio_dir; 404 if not a file; 401 auth.",
+    "evidence": "acestep/api/http/audio_route.py:17-39; URL construction api_server.py:200-207"
+   },
+   {
+    "method": "GET",
+    "path": "/health",
+    "purpose": "Liveness/readiness probe. NO auth.",
+    "request": "None.",
+    "response": "Envelope data = {status:\"ok\" (always, even when models not loaded), service:\"ACE-Step API\", version:\"1.0\", models_initialized: bool, llm_initialized: bool, loaded_model: str|null (primary DiT name e.g. acestep-v15-turbo), loaded_lm_model: str|null}.",
+    "evidence": "acestep/api/http/model_service_routes.py:146-161"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/stats",
+    "purpose": "Queue/job statistics.",
+    "request": "None (Authorization header).",
+    "response": "Envelope data = {jobs:{total:int,queued:int,running:int,succeeded:int,failed:int}, queue_size:int, queue_maxsize:int (default 200), avg_job_seconds:float (rolling mean of last 50 jobs, initial 5.0)}.",
+    "evidence": "acestep/api/http/model_service_routes.py:163-177; acestep/api/jobs/store.py:179-192; acestep/api_server.py:194-198"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/models",
+    "purpose": "SHADOWED ROUTE \u2014 two handlers registered; the OpenRouter one wins because its router is included first (route_setup.py:70-71 before register_model_service_routes at 73). Actual behavior: OpenRouter-format model list, NO auth.",
+    "request": "None.",
+    "response": "{object:\"list\", data:[{id:\"acestep/<model>\", name, created, input_modalities:[\"text\",\"audio\"], output_modalities:[\"audio\",\"text\"], context_length:4096, max_output_length:300, pricing:{prompt,completion,request,image:\"0\"}, description, architecture:null}]} \u2014 only models whose handler slot is initialized appear (empty list before init). NOT wrapped in the {data,code,...} envelope.",
+    "evidence": "acestep/openrouter_adapter.py:594-651; acestep/openrouter_models.py:205-236; shadowed handler acestep/api/http/model_service_routes.py:179-183; ordering acestep/api/route_setup.py:70-84",
+    "notes": "For the wrapped inventory payload use /v1/model_inventory instead."
+   },
+   {
+    "method": "GET",
+    "path": "/v1/model_inventory",
+    "purpose": "Internal (non-OpenRouter) DiT/LM model inventory: what exists in checkpoints/ and what is loaded.",
+    "request": "None (Authorization header).",
+    "response": "Envelope data = {models:[{name:str, is_default:bool, is_loaded:bool, supported_task_types:[str] (turbo: text2music,repaint,cover,cover-nofsq; base adds extract,lego,complete \u2014 read from each model's config.json is_turbo)}], default_model:str|null, lm_models:[{name:str,is_loaded:bool}] (dirs starting acestep-5Hz-lm-), loaded_lm_model:str|null, llm_initialized:bool}.",
+    "evidence": "acestep/api/http/model_service_routes.py:33-125,185-189; acestep/constants.py:82,89"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/init",
+    "purpose": "On-demand initialize/switch DiT model (slots 1-3) and optionally the 5Hz LM. Runs in thread executor (does not block event loop).",
+    "request": "JSON InitModelRequest: {model?: str|null (DiT name e.g. 'acestep-v15-base'), slot?: int|null ge=1 le=3 (pydantic-validated; slots 2/3 require ACESTEP_CONFIG_PATH2/3 set at startup), init_llm?: bool=false, lm_model_path?: str|null (e.g. 'acestep-5Hz-lm-1.7B')}.",
+    "response": "Envelope data = {message:\"Model initialization completed\", slot:int, loaded_model:str|null, loaded_lm_model:str|null, models:[...], lm_models:[...], llm_initialized:bool}. Failures returned with HTTP 200 but envelope code=400 (slot unavailable) or 500 + error string.",
+    "evidence": "acestep/api/http/model_service_routes.py:17-31,191-231"
+   },
+   {
+    "method": "POST",
+    "path": "/create_random_sample",
+    "purpose": "Return a random canned example payload (no LM call) for pre-filling UI forms.",
+    "request": "JSON or form: {sample_type?: str = \"simple_mode\" (anything else => custom mode), ai_token?}.",
+    "response": "Envelope data = one example JSON loaded from examples/simple_mode/example_*.json \u2014 shape {description:str, instrumental:bool, vocal_language:str} \u2014 or examples/text2music/example_*.json \u2014 shape {think:bool, caption:str, lyrics:str, bpm:int, duration:int, keyscale:str, language:str, timesignature:str}. code=500 + error \"No example data available\" if none loaded.",
+    "evidence": "acestep/api/http/sample_format_routes.py:30-49; acestep/api_server.py:135-158; examples/simple_mode/example_01.json; examples/text2music/example_01.json"
+   },
+   {
+    "method": "POST",
+    "path": "/format_input",
+    "purpose": "LM query-rewrite step exposed standalone: enhance/normalize caption+lyrics and fill metadata via the 5Hz LM (format_sample). Lazy-initializes the LM if needed.",
+    "request": "JSON or form: {prompt?: str \"\", lyrics?: str \"\", temperature?: float 0.85, param_obj?: dict-or-JSON-string {duration?: float, bpm?: int, key?/key_scale?: str, time_signature?: str, language?: str}, time_signature?: str (top-level fallback), ai_token?}.",
+    "response": "Envelope data = {caption: str, lyrics: str, bpm: int|null, key_scale: str, time_signature: str, duration: float|null, vocal_language: str (\"unknown\" fallback)}. Errors: 503 detail \"LLM not initialized. Set ACESTEP_INIT_LLM=true in .env to enable.\" when lazy-load disabled; 500 \"LLM init failed: ...\"; envelope code=500 + error on format failure.",
+    "evidence": "acestep/api/http/sample_format_routes.py:51-160"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/create_sample",
+    "purpose": "LM planner exposed standalone: natural-language description -> full generation plan (caption, lyrics, bpm, key, duration, time signature, language) via 5Hz LM create_sample. API twin of Gradio Simple-Mode 'Create Sample'.",
+    "request": "JSON or form: {query?: str \"\", instrumental?: bool false (string 'true'/'1'/'yes' accepted), vocal_language?: str \"unknown\", temperature?: float 0.85, ai_token?}.",
+    "response": "Envelope data = {caption: str, lyrics: str, bpm: int|null, keyscale: str, duration: float|null, timesignature: str, vocal_language: str}. Same 503/500 LM-init errors as /format_input; envelope code=500 on create failure.",
+    "evidence": "acestep/api/http/sample_format_routes.py:162-246"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "purpose": "OpenRouter/OpenAI-compatible music generation (same job queue). Returns audio as base64 data URL inline. NO auth. Does NOT lazy-init models (503 if not initialized).",
+    "request": "JSON ChatCompletionRequest (extra fields allowed): model: str REQUIRED (\"acestep/<name>\"); messages: [{role: system|user|assistant, content: str | [{type:text,text}|{type:input_audio,input_audio:{data: base64, format:\"mp3\"}}], name?}] REQUIRED \u2014 only last user message parsed; <prompt>/<lyrics> tags or lyric-heuristics split text; audio blobs become temp files routed by task_type (cover/repaint/lego/extract/complete: audio[0]->src, audio[1]->reference; else audio[0]->reference). modalities?: [str]; audio_config?: {duration?: float, format: str \"mp3\", bpm?: int, key_scale?: str, time_signature?: str, vocal_language?: str, instrumental?: bool}; temperature?: float ge0 le2; top_p?: float ge0 le1; top_k?: int ge0; max_tokens?: int ge1 (unused); stream: bool false; stop?; seed?: int|str (comma-separated for batch; null => random); thinking?: bool; guidance_scale?: float; batch_size?: int (null => 1 here, NOT 2); lyrics: str \"\" (direct, bypasses parsing); sample_mode: bool false; use_format: bool false; use_cot_caption: bool true; use_cot_language: bool true; task_type: str \"text2music\"; repainting_start: float 0.0; repainting_end?: float; audio_cover_strength: float 1.0; audio_codes: str \"\"; cover_noise_strength: float 0.0; inference_steps: int 8; infer_method: str \"ode\"; lm_cfg_scale: float 2.0; use_cot_metas?: bool.",
+    "response": "Non-streaming: {id:\"chatcmpl-...\", object:\"chat.completion\", created, model, choices:[{index:0, message:{role:\"assistant\", content: markdown w/ '## Metadata'+'## Lyrics', audio:[{type:\"audio_url\",audio_url:{url:\"data:audio/...;base64,...\"}}]|null (first take only), audio_codes: str|null}, finish_reason:\"stop\"}], usage:{0,0,0}}. Streaming (stream:true): SSE chat.completion.chunk events; heartbeat '.' content chunk every 2s; then content chunk, audio chunk, optional '[audio_codes]...[/audio_codes]' chunk, finish_reason stop, 'data: [DONE]'. Errors: 400 invalid request / no prompt-lyrics-query-audio; 429 queue full; 503 model not initialized; 504 after ACESTEP_GENERATION_TIMEOUT (default 600s, non-streaming only); 500 with rec.error detail on failure.",
+    "evidence": "acestep/openrouter_adapter.py:46,236-318,321-470,473-568,653-813; acestep/openrouter_models.py:58-113"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/lora/load",
+    "purpose": "Load LoRA/LoKr adapter into primary model.",
+    "request": "JSON {lora_path: str REQUIRED, adapter_name?: str|null}.",
+    "response": "Envelope data = {message, lora_path, adapter_name?}. 500 if model not initialized; 400 detail on backend non-success; 500 on exception.",
+    "evidence": "acestep/api/http/lora_routes.py:16-21,60-81"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/lora/unload",
+    "purpose": "Unload adapter, restore base model.",
+    "request": "Empty body (Authorization header).",
+    "response": "Envelope data = {message}. 400/500 as above.",
+    "evidence": "acestep/api/http/lora_routes.py:83-96"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/lora/toggle",
+    "purpose": "Enable/disable loaded LoRA.",
+    "request": "JSON {use_lora: bool REQUIRED}.",
+    "response": "Envelope data = {message, use_lora}; failures via envelope code=400/500.",
+    "evidence": "acestep/api/http/lora_routes.py:30-34,98-109"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/lora/scale",
+    "purpose": "Set adapter strength.",
+    "request": "JSON {scale: float REQUIRED ge=0.0 le=1.0 (pydantic), adapter_name?: str|null}.",
+    "response": "Envelope data = {message, scale, adapter_name?}; failures envelope code=400/500.",
+    "evidence": "acestep/api/http/lora_routes.py:23-27,111-130"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/lora/status",
+    "purpose": "Current adapter state.",
+    "request": "None (Authorization header).",
+    "response": "Envelope data = {lora_loaded: bool, use_lora: bool, lora_scale: float, adapter_type: str|null, scales: {}, active_adapter, adapters: [], synthetic_default_mode: bool}. 500 if model not initialized.",
+    "evidence": "acestep/api/http/lora_routes.py:132-149"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/reinitialize",
+    "purpose": "Reload components unloaded during training/preprocessing (DiT/VAE/text-encoder, LLM, decoder back to GPU).",
+    "request": "Empty body (Authorization header).",
+    "response": "Envelope data = {message: str, reloaded: [str]}. 500 if service not initialized; envelope code=500 on failure.",
+    "evidence": "acestep/api/http/reinitialize_route.py:25-106"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/training/start",
+    "purpose": "Start LoRA training from preprocessed tensors (background thread).",
+    "request": "JSON StartTrainingRequest: tensor_dir: str REQUIRED; lora_rank: int 64 (1-256); lora_alpha: int 128 (1-512); lora_dropout: float 0.1 (0-1); learning_rate: float 1e-4 (>0); train_epochs: int 10 (>=1); train_batch_size: int 1 (>=1); gradient_accumulation: int 4 (>=1); save_every_n_epochs: int 5 (>=1); training_shift: float 3.0 (>=0); training_seed: int 42; lora_output_dir: str \"./lora_output\"; use_fp8: bool false; gradient_checkpointing: bool false.",
+    "response": "Envelope data = {message:\"Training started\", tensor_dir, output_dir, config:{lora_rank,lora_alpha,learning_rate,epochs}, fp8_enabled}. 400 if already training; 500 model/decoder not initialized; envelope code=500 on trainer error.",
+    "evidence": "acestep/api/train_api_models.py:13-29; acestep/api/train_api_lora_start_route.py:28-153"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/training/start_lokr",
+    "purpose": "Start LoKr training.",
+    "request": "JSON StartLoKRTrainingRequest: tensor_dir: str REQUIRED; lokr_linear_dim: int 64 (1-256); lokr_linear_alpha: int 128 (1-512); lokr_factor: int -1; lokr_decompose_both/use_tucker/use_scalar: bool false; lokr_weight_decompose: bool true; learning_rate: float 0.03 (>0); train_epochs: int 500 (>=1); train_batch_size: int 1; gradient_accumulation: int 4; save_every_n_epochs: int 5; training_shift: float 3.0; training_seed: int 42; output_dir: str \"./lokr_output\"; gradient_checkpointing: bool false.",
+    "response": "Analogous wrapped start message.",
+    "evidence": "acestep/api/train_api_models.py:32-51; acestep/api/train_api_lokr_start_route.py:28"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/training/stop",
+    "purpose": "Request training stop and reset training state.",
+    "request": "Empty body (Authorization header).",
+    "response": "Envelope data = {message:\"Stopping training...\"|\"No training in progress\"}.",
+    "evidence": "acestep/api/train_api_service.py:52-81"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/training/status",
+    "purpose": "Training progress snapshot.",
+    "request": "None (Authorization header).",
+    "response": "Envelope data = {is_training: bool, should_stop: bool, current_step: int, current_loss: float|null, status: str, config: {}, tensor_dir: str, loss_history: [{step,loss}] (last 1000), tensorboard_url: str|null, tensorboard_logdir: str|null, training_log: str, start_time: float|null, current_epoch: int, steps_per_second: float, estimated_time_remaining: float, error: str|null}.",
+    "evidence": "acestep/api/train_api_service.py:83-107; acestep/api/train_api_models.py:110-130"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/training/load_tensor_info",
+    "purpose": "Inspect a preprocessed tensor directory (manifest.json or .pt scan).",
+    "request": "JSON {tensor_dir: str REQUIRED}.",
+    "response": "Envelope data = {dataset_name, num_samples, custom_tag, tensor_dir, message}. 400 if missing/not dir/no .pt files.",
+    "evidence": "acestep/api/train_api_service.py:109-156"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/training/export",
+    "purpose": "Copy trained LoRA/LoKr weights ('final' or latest epoch checkpoint) to a destination directory.",
+    "request": "JSON ExportLoRARequest {export_path: str REQUIRED, lora_output_dir: str REQUIRED}.",
+    "response": "Envelope data = {message, export_path, source}. 404 if no checkpoints; envelope code=500 on copy failure.",
+    "evidence": "acestep/api/train_api_models.py:54-58; acestep/api/train_api_service.py:158-183"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/dataset/scan",
+    "purpose": "Scan directory of audio files into a new in-memory training dataset.",
+    "request": "JSON ScanDirectoryRequest {audio_dir: str REQUIRED, dataset_name: str \"my_lora_dataset\", custom_tag: str \"\", tag_position: str \"replace\" (prepend/append/replace), all_instrumental: bool true}.",
+    "response": "Envelope data = {message, num_samples, samples:[{index,filename,audio_path,duration,caption,genre,prompt_override,lyrics,bpm,keyscale,timesignature,language,is_instrumental,labeled}]}. code=400 if none found.",
+    "evidence": "acestep/api/train_api_dataset_models.py:10-17,102-123; acestep/api/train_api_dataset_scan_load_routes.py:20-53"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/dataset/load",
+    "purpose": "Load existing dataset JSON.",
+    "request": "JSON {dataset_path: str REQUIRED}.",
+    "response": "Envelope data = {message, dataset_name, num_samples, labeled_count, samples:[...]}; code=400/500 variants keep same data shape.",
+    "evidence": "acestep/api/train_api_dataset_scan_load_routes.py:55-101"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/dataset/auto_label",
+    "purpose": "Synchronously auto-label all samples via DiT+LM (blocks until done).",
+    "request": "JSON AutoLabelRequest {skip_metas: bool false, format_lyrics: bool false, transcribe_lyrics: bool false, only_unlabeled: bool false, lm_model_path?: str, save_path?: str, chunk_size: int 16 (>=1, legacy aliases hunk_size/hunksize), batch_size: int 1 (>=1, alias batchsize)}.",
+    "response": "Envelope data = {message, labeled_count, samples:[...]}. 400 no dataset; 500 model/LLM not initialized.",
+    "evidence": "acestep/api/train_api_dataset_models.py:26-66; acestep/api/train_api_dataset_auto_label_sync_route.py:28-119"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/dataset/auto_label_async",
+    "purpose": "Start auto-label as a background thread task.",
+    "request": "Same AutoLabelRequest.",
+    "response": "Envelope data = {task_id: str(uuid4), message, total: int}. Poll via auto_label_status.",
+    "evidence": "acestep/api/train_api_dataset_auto_label_async_route.py:30-80"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/dataset/auto_label_status/{task_id}",
+    "purpose": "Poll one auto-label task.",
+    "request": "Path param task_id.",
+    "response": "Envelope data = {task_id, status: running|completed|failed, progress: str, current: int, total: int, save_path, last_updated_index, last_updated_sample, result?: {...} (completed), error?: str (failed)}. 404 unknown task.",
+    "evidence": "acestep/api/train_api_dataset_auto_label_status_route.py:19; acestep/api/train_api_models.py:61-76"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/dataset/auto_label_status",
+    "purpose": "Poll latest auto-label task (or idle).",
+    "request": "None.",
+    "response": "Same shape; status \"idle\" + empty fields when none.",
+    "evidence": "acestep/api/train_api_dataset_status_routes.py:62-104"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/dataset/preprocess",
+    "purpose": "Synchronously preprocess loaded dataset to training tensors.",
+    "request": "JSON PreprocessDatasetRequest {output_dir: str REQUIRED, skip_existing: bool false}.",
+    "response": "Envelope data = {message, output_dir, num_tensors}. 400 no dataset; 500 model not initialized; code=400/500 on failure.",
+    "evidence": "acestep/api/train_api_dataset_models.py:95-99; acestep/api/train_api_dataset_preprocess_routes.py:26-72"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/dataset/preprocess_async",
+    "purpose": "Start preprocessing as background thread task.",
+    "request": "Same PreprocessDatasetRequest.",
+    "response": "Envelope data = {task_id, message, total}.",
+    "evidence": "acestep/api/train_api_dataset_preprocess_routes.py:74-176"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/dataset/preprocess_status/{task_id}",
+    "purpose": "Poll one preprocess task.",
+    "request": "Path param task_id.",
+    "response": "Envelope data = {task_id, status: running|completed|failed, progress: str, current: int, total: int, result?: {message,output_dir,num_tensors}, error?: str}. 404 unknown.",
+    "evidence": "acestep/api/train_api_dataset_preprocess_routes.py:178-200"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/dataset/preprocess_status",
+    "purpose": "Poll latest preprocess task (or idle).",
+    "request": "None.",
+    "response": "Same shape; status \"idle\" when none.",
+    "evidence": "acestep/api/train_api_dataset_status_routes.py:19-60"
+   },
+   {
+    "method": "POST",
+    "path": "/v1/dataset/save",
+    "purpose": "Persist current dataset to JSON.",
+    "request": "JSON SaveDatasetRequest {save_path: str REQUIRED, dataset_name: str \"my_lora_dataset\", custom_tag?: str, tag_position?: str, all_instrumental?: bool, genre_ratio?: int 0-100}.",
+    "response": "Envelope data = {message, save_path}. 400 no dataset / backend error.",
+    "evidence": "acestep/api/train_api_dataset_models.py:69-77; acestep/api/train_api_dataset_sample_routes.py:19-46"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/dataset/samples",
+    "purpose": "List all samples in current dataset.",
+    "request": "None.",
+    "response": "Envelope data = {dataset_name, num_samples, labeled_count, samples:[...]}. 400 no dataset.",
+    "evidence": "acestep/api/train_api_dataset_sample_routes.py:48-63"
+   },
+   {
+    "method": "GET",
+    "path": "/v1/dataset/sample/{sample_idx}",
+    "purpose": "Get one sample by index.",
+    "request": "Path param sample_idx: int.",
+    "response": "Envelope data = sample.to_dict() + {index}. 404 out of range; 400 no dataset.",
+    "evidence": "acestep/api/train_api_dataset_sample_routes.py:65-79"
+   },
+   {
+    "method": "PUT",
+    "path": "/v1/dataset/sample/{sample_idx}",
+    "purpose": "Update one sample's labels.",
+    "request": "Path param sample_idx + JSON UpdateSampleRequest {sample_idx: int REQUIRED ge=0 (duplicated in body), caption: str \"\", genre: str \"\", prompt_override?: str|null, lyrics: str \"[Instrumental]\", bpm?: int, keyscale: str \"\", timesignature: str \"\", language: str \"unknown\", is_instrumental: bool true}.",
+    "response": "Envelope data = {message, sample: {...}+index}. 400/500 variants.",
+    "evidence": "acestep/api/train_api_dataset_models.py:80-92; acestep/api/train_api_dataset_sample_routes.py:81-110"
+   }
+  ],
+  "task_lifecycle": "CREATE: POST /release_task parses the body, validates auth, then store.create() makes an in-memory _JobRecord {job_id: str(uuid4), status:\\\"queued\\\", created_at, progress:0.0, stage:\\\"queued\\\", progress_text:\\\"\\\", env:\\\"development\\\", result:null, error:null} (jobs/store.py:18-91) and the (job_id, GenerateMusicRequest) tuple is put on a process-local asyncio.Queue (maxsize env ACESTEP_QUEUE_MAXSIZE, default 200 \u2014 429 when full). Response data: {task_id, status:\\\"queued\\\", queue_position} (release_task_route.py:66-85). The store is in-memory only \u2014 uvicorn is hard-pinned to workers=1 (server_cli.py:89-96). EXECUTE: ACESTEP_QUEUE_WORKERS (default 1) worker coroutines consume the queue (worker_runtime.py:42-73, jobs/worker_loops.py:9-57). For each job: (1) ensure_models_initialized \u2014 with default ACESTEP_NO_INIT=true this lazily downloads+loads DiT/VAE/LM on the FIRST job, synchronously on the event loop (job_runtime_state.py:11-61, startup_model_init.py:185); the job remains status \\\"queued\\\" during this. (2) store.mark_running (progress clamped >=0.01, stage \\\"running\\\") + a 'running' record written to the local file cache under key \\\"ace_step_v1.5_<task_id>\\\" with 7-day TTL (api_server.py:109-110). (3) Blocking generation runs in a ThreadPoolExecutor (job_execution_runtime.py:74-77): LM prep (sample_mode/use_format/thinking), optional analysis-only short-circuits, then generate_music; a throttled progress callback (fires on >=0.01 delta, stage change, or 0.5s elapsed) calls store.update_progress(job_id, value 0.0-1.0, stage) and rewrites the cache progress record (job_blocking_generation.py:132-159). COMPLETE: on success store.mark_succeeded(result) sets progress=1.0, stage=\\\"succeeded\\\", finished_at, and the terminal result is written to the cache (one entry per audio take). The success result dict is {first_audio_path: \\\"/v1/audio?path=...\\\"|null, second_audio_path, audio_paths: [download URLs], raw_audio_paths: [absolute disk paths], generation_info: markdown timing string, status_message, seed_value: \\\"s1,s2,...\\\", prompt (final caption), lyrics (final), metas: {bpm,duration,genres,keyscale,timesignature,prompt(original),lyrics(original)} (\\\"N/A\\\" scrubbing for missing/negative), bpm: int|null, duration: number|null, genres/keyscale/timesignature: str|null, lm_model, dit_model, cot_caption, cot_lyrics} (job_result_payload.py:54-137). On failure store.mark_failed(error=FULL TRACEBACK STRING) stage=\\\"failed\\\" (job_execution_runtime.py:89-103). POLL: POST /query_result (see endpoint entry) \u2014 per-task item {task_id, result: JSON string, status: int, progress_text}. STATUS VALUES \u2014 store strings: queued | running | succeeded | failed (jobs/store.py:15); integer mapping in responses: queued->0, running->0, succeeded->1, failed->2, anything else->2 (server_utils.py:10,118-121); a cached running record older than TASK_TIMEOUT_SECONDS=3600 reports status 2 (query_result_service.py:53-54, api_server.py:111). PROGRESS: numeric, field name `progress`, float scale 0.0-1.0, inside result[0] of the parsed `result` JSON for non-terminal jobs, plus `stage` (free-text, e.g. \\\"queued\\\",\\\"running\\\", or progress descriptions) and top-level `progress_text` (last captured log line, log_capture installed at api_server.py:183). ERROR SHAPE: failed jobs => top-level status 2 and result[0].error = full Python traceback string (query_result_service.py:119-131); HTTP-level errors use FastAPI {detail: str} (400/401/415/429/503/504) while business errors inside 200 responses use the envelope {data:null, code:400|500, error: str}. RETENTION: completed jobs purged from the store after 24h (JOB_STORE_MAX_AGE_SECONDS=86400, cleanup every 300s); cache records expire after 7 days (RESULT_EXPIRE_SECONDS, api_server.py:110-113). BATCH: batch_size on /release_task defaults to 2 takes when omitted (job_generation_setup.py:203; GenerationConfig.batch_size default 2 at inference.py:243); each take is a separate element in audio_paths and a separate item in the query_result array; seed accepts comma-separated per-take values; seed_value in results is comma-joined actual seeds. OpenRouter /v1/chat/completions rides the SAME queue but waits in-request via done_event (600s timeout) or streams via progress_queue (jobs/worker_loops.py:38-45).",
+  "file_outputs": "Generated audio is written to app.state.temp_audio_dir = <tmp_root>/api_audio where tmp_root = $ACESTEP_TMPDIR or <repo>/.cache/acestep/tmp \u2014 i.e. default /Users/zathras/WAVESMITH_Project/engine/ACE-Step-1.5/.cache/acestep/tmp/api_audio (lifespan_runtime.py:60-61,135-136; passed as save_dir at job_generation_runtime.py:92). Filename = deterministic UUID hash of generation params: <uuid>.<ext> (inference.py:1017-1033). Format from request `audio_format` (API default \\\"mp3\\\"; engine-level default flac): flac|mp3|opus|aac|wav|wav32 (wav32 saved with .wav extension); unsupported values fall back to flac (audio_utils.py:122-132, release_task_models.py:101-104). MP3 specifics: bitrate 128k (allowed 128k/192k/256k/320k), 48kHz (allowed 44.1k/48k) (audio_utils.py:117-120). CLIENT RETRIEVAL: the API converts each absolute path to a relative URL \\\"/v1/audio?path=<urllib.parse.quote(path, safe='')>\\\" (api_server.py:200-207); these URLs appear as `file` in /query_result items and in audio_paths/first_audio_path/second_audio_path of the success result; fetch bytes with GET /v1/audio?path=... (+ Authorization header if API key set). raw_audio_paths carries the un-encoded absolute disk paths if the client is on the same host. /v1/audio refuses (403) any path outside temp_audio_dir (audio_route.py:23-28). The OpenRouter endpoint instead inlines audio as a base64 data URL. Uploaded reference/source audio goes to system temp via tempfile.mkstemp(prefix=\\\"ref_audio_\\\"/\\\"ctx_audio_\\\") and is deleted after the job (release_task_audio_paths.py:49-93, job_runtime_state.py:64-78).",
+  "health": "GET /health (no auth) always returns HTTP 200 with envelope data {status:\\\"ok\\\", service:\\\"ACE-Step API\\\", version:\\\"1.0\\\", models_initialized: bool, llm_initialized: bool, loaded_model: str|null, loaded_lm_model: str|null} (model_service_routes.py:146-161). There is NO separate readiness endpoint and NO download-progress in health. Semantics: by default ACESTEP_NO_INIT=true (startup_model_init.py:185) so the server starts instantly, accepts requests, and reports models_initialized:false / loaded_model:null until models load. Loading happens either (a) eagerly at startup if ACESTEP_NO_INIT=false / --no-init absent-equivalent (runs inside lifespan, so the server doesn't accept connections until done), (b) lazily on the FIRST queued job \u2014 CAVEAT: this path calls do_model_initialization() synchronously inside the worker coroutine (job_runtime_state.py:34-61), blocking the entire event loop, so /health may HANG (not error) during first-job model download/weights load; the affected job shows status \\\"queued\\\"/0 with progress 0.0 the whole time, or (c) explicitly via POST /v1/init, which runs in the thread executor and keeps /health responsive (model_service_routes.py:199-211). After success: models_initialized:true, loaded_model:\\\"acestep-v15-turbo\\\" (default ACESTEP_CONFIG_PATH, lifespan_runtime.py:113), llm_initialized true only if the 5Hz LM was loaded (ACESTEP_INIT_LLM / GPU-tier default). If init failed, /health still says status:\\\"ok\\\" with models_initialized:false; the failure surfaces as job failures (RuntimeError with stored _init_error) or 503/500 from LM-dependent endpoints. Readiness recipe for a TS client: poll GET /health until models_initialized===true (with a request timeout, since the lazy path can stall the loop), or call POST /v1/init first. GET /v1/stats and GET /v1/model_inventory give queue depth and per-model is_loaded detail.",
+  "lm_plan_endpoint": "YES \u2014 three separate callable LM steps, no DiT involved: (1) POST /v1/create_sample \u2014 description query -> full plan {caption, lyrics, bpm, keyscale, duration, timesignature, vocal_language} via 5Hz LM create_sample (sample_format_routes.py:162-246); (2) POST /format_input \u2014 query-rewrite/enhancement of existing caption+lyrics plus metadata fill via format_sample, returns {caption, lyrics, bpm, key_scale, time_signature, duration, vocal_language} (sample_format_routes.py:51-160); both lazy-init the LM and return 503 if LM loading is disabled. (3) POST /release_task with analysis_only:true \u2014 async job that runs only the LM CoT metadata plan (no audio; result has metas/bpm/keyscale/duration/prompt/lyrics, generation_info:\\\"Analysis Only Mode Complete\\\", dit_model:\\\"None (Analysis Only)\\\") (job_analysis_runtime.py:84-114); related flags full_analysis_only (audio understanding -> metadata+codes) and extract_codes_only (codes only) (job_analysis_runtime.py:38-82). Additionally POST /create_random_sample returns canned example plans without any LM call. Note: lyric generation is not a standalone endpoint beyond these \u2014 /v1/create_sample is the lyrics generator.",
+  "progress_reporting": "Numeric progress IS reported: field `progress`, float 0.0-1.0 (clamped, store.py:148-157), found inside the first element of the JSON-encoded `result` array returned by POST /query_result for queued/running/failed jobs, and fixed at 1.0 in terminal success records; accompanied by `stage` (string: \\\"queued\\\", \\\"running\\\", \\\"succeeded\\\", \\\"failed\\\", or generation phase descriptions from the progress callback) and a top-level `progress_text` string per task (last server log line via the global log-capture buffer \u2014 note it is global, not per-job isolated). Updates are throttled to >=1% delta / stage change / 0.5s (job_blocking_generation.py:134-149). The store also tracks queued->running->succeeded/failed transitions; queue_position is only returned once at submit time. Async training-side tasks (/v1/dataset/preprocess_status, /v1/dataset/auto_label_status) report {status: running|completed|failed|idle, progress: str, current: int, total: int} instead. OpenRouter streaming emits SSE heartbeat chunks every 2s rather than numeric progress.",
+  "statuses": [
+   "Job store status strings: queued, running, succeeded, failed (acestep/api/jobs/store.py:15)",
+   "Integer status in /query_result responses: 0 = queued or running, 1 = succeeded, 2 = failed (also returned for unknown status text, and for cached running records older than 3600s) (acestep/api/server_utils.py:10,118-121; query_result_service.py:53-54)",
+   "Unknown task_id in /query_result: {result:\"[]\", status:0}",
+   "/release_task immediate response status string: \"queued\"",
+   "stage strings on records: queued, running, succeeded, failed, plus free-text generation phases via progress callback",
+   "Dataset/preprocess/auto-label async task statuses: running, completed, failed, plus idle in the latest-status endpoints (train_api_dataset_preprocess_routes.py:104,147,159; train_api_dataset_status_routes.py:29)"
+  ],
+  "open_questions": [
+   "The checkout at /Users/zathras/WAVESMITH_Project/engine/ACE-Step-1.5 is not a git repo per the environment, so the v0.1.8 tag pin could not be verified from inside the tree; verify the pinned source separately.",
+   "GET /v1/models is double-registered; the OpenRouter (unauthenticated, {object:'list'} format) handler shadows the authenticated wrapped-inventory handler because the router is included first (route_setup.py:70-84). A TS client must use GET /v1/model_inventory for the inventory payload. If upstream ever reorders registration, the shape of /v1/models flips \u2014 pin to /v1/model_inventory.",
+   "POST /v1/chat/completions and GET /v1/models perform NO API-key check even when --api-key is set \u2014 do not expose this server publicly assuming the key gates everything.",
+   "progress_text is the process-global last log line, not per-job; with concurrent jobs it can show another job's output.",
+   "No LRC/timestamped-lyrics and no quality-score fields exist anywhere in API responses. LRC utilities and scoring exist only in the Gradio UI layer (acestep/ui/gradio/events/results/lrc_utils.py; auto_score_time/auto_lrc_time only appear as timings inside the human-readable generation_info markdown string, generation_info.py:85-99). The separate Gradio app mounts a similar but distinct router (acestep/ui/gradio/api/api_routes.py) \u2014 not part of acestep-api.",
+   "Default batch_size=2 on /release_task (job_generation_setup.py:203): pass batch_size:1 explicitly if you want a single take; GPU-tier max batch limits exist in gpu_config and may further constrain.",
+   "Lazy model init (default ACESTEP_NO_INIT=true) blocks the asyncio event loop during first-job model load, so /health can hang during warmup \u2014 either call POST /v1/init at app start or set ACESTEP_NO_INIT=false and wait for the port to open.",
+   "audio_format values are not validated at request time; typos silently fall back to FLAC files (with the .flac extension) (audio_utils.py:129-132).",
+   "No request body size limit is enforced anywhere (only CORSMiddleware configured); base64 audio in /v1/chat/completions is bounded only by memory.",
+   "The in-memory job store + queue mean results are lost on restart except the 7-day local file cache (.cache/acestep/local_redis); job records purge 24h after completion \u2014 a client should download audio promptly and not rely on long-term polling.",
+   "CORS allows only localhost origins; a Next.js app served from another host must proxy API calls server-side (which is the plan for the TS client anyway)."
+  ]
+ },
+ "verdicts": {
+  "verdicts": [
+   {
+    "claim": "AUTH: API key from --api-key flag or ACESTEP_API_KEY env; set_api_key disabled when unset; two enforcement paths (verify_api_key header-only, verify_token_from_request body ai_token-first); Bearer prefix stripped; OpenRouter routes unauthenticated; CORS localhost-only; no body-size middleware; 1MB chunked multipart saves",
+    "verdict": "confirmed",
+    "correction": "All cited lines check out exactly (flag default from env server_cli.py:36-40; env write-back 70-71; create_app reads env api_server.py:191-192; disable-when-None auth.py:39-40,67-68; ai_token-first 42-54; Bearer strip 49,73; error details match; openrouter routes have no auth dependency openrouter_adapter.py:594,653; CORS allow_origins/regex/methods/headers route_setup.py:62-68; only CORSMiddleware added; uploads streamed in 1024*1024 chunks release_task_audio_paths.py:76-81). One operational caveat the analyst missed: app = create_app() runs at module import (acestep/api_server.py:357), so whether --api-key actually takes effect depends on launch mode (see missed facts).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/auth.py",
+      "lines": "39-54, 67-75",
+      "quote": "if _api_key is None: return None ... token = authorization[7:] if authorization.startswith(\"Bearer \") else authorization"
+     },
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "62-71",
+      "quote": "allow_origins=[\"null\", \"http://localhost\", \"http://127.0.0.1\"], allow_origin_regex=r\"^https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?$\""
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "594, 653",
+      "quote": "@router.get(\"/v1/models\") ... @router.post(\"/v1/chat/completions\") \u2014 no Depends(verify_api_key)"
+     }
+    ]
+   },
+   {
+    "claim": "POST /release_task request schema: content-type sniffing (json/multipart/urlencoded/raw, else 415), aliases via PARAM_ALIASES + param_obj/metas, full field list with defaults (inference_steps 8, guidance_scale 7.0, batch_size default 2 when omitted, audio_format mp3, lm_backend vllm, repaint_strength 0.5 ge0 le1, etc.), audio path validation, multipart file fields",
+    "verdict": "partially_correct",
+    "correction": "Field names, defaults, aliases, Literal validations, and parsing flow are all accurate (verified against release_task_models.py:12-131, release_task_request_builder.py:32-104, release_task_param_parser.py:9-46, release_task_request_parser.py:88-205, job_generation_setup.py:203). Three inaccuracies: (1) 'Every field has aliases' is overstated \u2014 only ~30 canonical names appear in PARAM_ALIASES; the rest fall back to their own name via PARAM_ALIASES.get(name, [name]) (param_parser.py:135), though all builder-parsed fields CAN come from raw/param_obj/metas. (2) 'lm_top_p (>=1.0 treated as off)' is wrong: llm_generation_inputs.py:64-65 replaces >=1.0 with the DEFAULT 0.9, so sampling still uses top_p=0.9; only lm_top_k<=0 is truly off (top_k=None at :133). (3) audio-path validation is incomplete: besides absolute-paths-inside-system-temp, RELATIVE paths without '..' segments are accepted as-is and resolved against server CWD (release_task_audio_paths.py:40-46). Also minor: track_name arrives as \"\" not null when absent (builder line 100 uses parser.str).",
+    "evidence": [
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "64-65",
+      "quote": "lm_top_k = req.lm_top_k if req.lm_top_k and req.lm_top_k > 0 else 0\n    lm_top_p = req.lm_top_p if req.lm_top_p and req.lm_top_p < 1.0 else 0.9"
+     },
+     {
+      "file": "acestep/api/http/release_task_audio_paths.py",
+      "lines": "40-46",
+      "quote": "if os.path.isabs(path): raise HTTPException(400 ...) ; normalized = os.path.normpath(path); if \"..\" in normalized.split(os.sep): raise ... ; return path"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "203",
+      "quote": "batch_size = req.batch_size if req.batch_size is not None else 2"
+     }
+    ]
+   },
+   {
+    "claim": "POST /release_task response: envelope {data,code,error,timestamp ms,extra} with data {task_id uuid4, status 'queued', queue_position 1-based}; 429 queue full (ACESTEP_QUEUE_MAXSIZE default 200); 400/401/415 errors",
+    "verdict": "confirmed",
+    "correction": "",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_route.py",
+      "lines": "66-85",
+      "quote": "raise HTTPException(status_code=429, detail=\"Server busy: queue is full\") ... return wrap_response({\"task_id\": record.job_id, \"status\": \"queued\", \"queue_position\": position})"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "120-128, 194",
+      "quote": "\"timestamp\": int(time.time() * 1000) ... QUEUE_MAXSIZE = int(os.getenv(\"ACESTEP_QUEUE_MAXSIZE\", \"200\"))"
+     }
+    ]
+   },
+   {
+    "claim": "POST /query_result: task_id_list parsing, per-task items {task_id, result JSON-string, status int, progress_text}, cache vs store shapes, success items per take with prompt=final caption/lyrics=final lyrics, failed result[0].error = full traceback, unknown id => {result:'[]',status:0}, 3600s staleness",
+    "verdict": "partially_correct",
+    "correction": "Parsing, item envelope, cache running shape (local_cache_updates.py:148-158), staleness (query_result_service.py:53-54), and unknown-id fallback (:195) are confirmed. Two shape errors: (1) In the STORE-derived success path, 'prompt' is metas.get(\"caption\",\"\") (query_result_service.py:91) but job_result_payload.py:100 writes the key \"prompt\" (not \"caption\") into metas \u2014 so store-derived success items always have prompt:\"\" and lyrics = ORIGINAL lyrics (metas[\"lyrics\"]=original_lyrics, :101), not final. Only the CACHE-derived success items carry the final caption/lyrics (local_cache_updates.py:61-62,86-87). (2) result[0].error with the full traceback is only returned from the STORE fallback (query_result_service.py:119-131); in the common path a failed job writes a terminal cache record WITHOUT any error field (local_cache_updates.py:115-124, written via job_execution_runtime.py:94-103), and the cache is consulted FIRST (query_result_service.py:170-182), so failed jobs typically return status 2 with result[0] = {file,wave,status,create_time,env,progress:0.0,stage:'failed'} and NO error string.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/query_result_service.py",
+      "lines": "91-92, 170-182",
+      "quote": "\"prompt\": metas.get(\"caption\", \"\"), \"lyrics\": metas.get(\"lyrics\", \"\") ... if local_cache: data = local_cache.get(result_key); if data: ... continue"
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "100-101",
+      "quote": "metas_out[\"prompt\"] = original_prompt\n    metas_out[\"lyrics\"] = original_lyrics"
+     },
+     {
+      "file": "acestep/api/jobs/local_cache_updates.py",
+      "lines": "115-124",
+      "quote": "else: result_data = [{\"file\": \"\", \"wave\": \"\", \"status\": status_int, ..., \"progress\": 0.0, \"stage\": \"failed\" if status == \"failed\" else status}]  # no 'error' key"
+     }
+    ]
+   },
+   {
+    "claim": "GET /v1/audio: query param path, verify_api_key, 403 outside temp_audio_dir, 404 not file, media types mp3/wav/flac/ogg default audio/mpeg; URL construction in api_server",
+    "verdict": "confirmed",
+    "correction": "Minor addendum: files saved as .opus/.aac are served with the default audio/mpeg media type since the map only covers .mp3/.wav/.flac/.ogg.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/audio_route.py",
+      "lines": "17-39",
+      "quote": "resolved_path.relative_to(allowed_dir) ... raise HTTPException(status_code=403 ...) ... media_types = {\".mp3\": \"audio/mpeg\", \".wav\": \"audio/wav\", \".flac\": \"audio/flac\", \".ogg\": \"audio/ogg\"}"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "200-207",
+      "quote": "encoded_path = urllib.parse.quote(path, safe=\"\")\n        return f\"/v1/audio?path={encoded_path}\""
+     }
+    ]
+   },
+   {
+    "claim": "GET /health endpoint shape: no auth, always status 'ok', service/version/models_initialized/llm_initialized/loaded_model/loaded_lm_model",
+    "verdict": "confirmed",
+    "correction": "Shape confirmed at model_service_routes.py:146-161. But see the separate 'health' narrative verdict: loaded_model is the CONFIGURED primary model name, not a load indicator.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "146-161",
+      "quote": "\"status\": \"ok\", \"service\": \"ACE-Step API\", \"version\": \"1.0\", \"models_initialized\": bool(getattr(app.state, \"_initialized\", False)), ... \"loaded_model\": inventory[\"default_model\"]"
+     }
+    ]
+   },
+   {
+    "claim": "GET /v1/stats: jobs counts, queue_size, queue_maxsize (default 200), avg_job_seconds (rolling mean last 50, initial 5.0)",
+    "verdict": "confirmed",
+    "correction": "Minor: both the initial 5.0 (ACESTEP_AVG_JOB_SECONDS) and the 50-sample window (ACESTEP_AVG_WINDOW) are env-overridable (api_server.py:197-198; deque maxlen at lifespan_runtime.py:126).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "163-177",
+      "quote": "\"jobs\": job_stats, \"queue_size\": app.state.job_queue.qsize(), \"queue_maxsize\": queue_maxsize, \"avg_job_seconds\": avg_job_seconds"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "197-198",
+      "quote": "INITIAL_AVG_JOB_SECONDS = float(os.getenv(\"ACESTEP_AVG_JOB_SECONDS\", \"5.0\"))\n    AVG_WINDOW = int(os.getenv(\"ACESTEP_AVG_WINDOW\", \"50\"))"
+     }
+    ]
+   },
+   {
+    "claim": "GET /v1/models is shadowed: OpenRouter handler wins (router included first), unauthenticated {object:'list', data:[ModelInfo...]} with only initialized slots; authenticated wrapped-inventory handler at model_service_routes.py:179-183 is dead",
+    "verdict": "confirmed",
+    "correction": "Router inclusion at route_setup.py:70-71 precedes register_model_service_routes at :73; FastAPI matches first-registered route. ModelInfo fields (context_length 4096, max_output_length 300, pricing strings incl. image:'0', architecture default None) verified at openrouter_models.py:197-231; empty list before init verified (state._initialized gating, openrouter_adapter.py:602-649).",
+    "evidence": [
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "70-73",
+      "quote": "openrouter_router = create_openrouter_router(lambda: app.state)\n    app.include_router(openrouter_router)\n\n    register_model_service_routes("
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "594-651",
+      "quote": "@router.get(\"/v1/models\", response_model=ModelsResponse) ... if getattr(state, \"_initialized\", False):"
+     }
+    ]
+   },
+   {
+    "claim": "GET /v1/model_inventory: wrapped inventory {models[{name,is_default,is_loaded,supported_task_types}], default_model, lm_models, loaded_lm_model, llm_initialized}; task types from config.json is_turbo; LM dirs acestep-5Hz-lm-*",
+    "verdict": "confirmed",
+    "correction": "",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "33-46, 102-125, 185-189",
+      "quote": "is_turbo = config.get(\"is_turbo\", False); if is_turbo: return list(TASK_TYPES_TURBO) ... if name.startswith(\"acestep-5Hz-lm-\"): available_lm_models.add(name)"
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "82, 89",
+      "quote": "TASK_TYPES_TURBO = [\"text2music\", \"repaint\", \"cover\", \"cover-nofsq\"] ... TASK_TYPES_BASE = [... \"extract\", \"lego\", \"complete\"]"
+     }
+    ]
+   },
+   {
+    "claim": "POST /v1/init: InitModelRequest {model?, slot? ge1 le3, init_llm=false, lm_model_path?}; runs in thread executor; success payload; failures HTTP 200 with envelope code 400 (slot unavailable) / 500",
+    "verdict": "confirmed",
+    "correction": "Slot-unavailable detection is string-matching on the RuntimeError ('slot'+'not available', model_service_routes.py:225-229); message originates in model_init_service.py:39-42.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "17-31, 191-231",
+      "quote": "slot: Optional[int] = Field(default=None, ge=1, le=3 ...) ... result = await loop.run_in_executor(app.state.executor, ...)"
+     }
+    ]
+   },
+   {
+    "claim": "POST /create_random_sample: {sample_type='simple_mode' else custom}, returns random canned example; simple shape {description,instrumental,vocal_language}, custom shape {think,caption,lyrics,bpm,duration,keyscale,language,timesignature}; code 500 when none loaded",
+    "verdict": "confirmed",
+    "correction": "",
+    "evidence": [
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "30-49",
+      "quote": "sample_type = body.get(\"sample_type\", \"simple_mode\") or \"simple_mode\" ... return wrap_response(random.choice(example_data))"
+     },
+     {
+      "file": "examples/simple_mode/example_01.json",
+      "lines": "1-5",
+      "quote": "{\"description\": ..., \"instrumental\": false, \"vocal_language\": \"bn\"}"
+     }
+    ]
+   },
+   {
+    "claim": "POST /format_input: lazy LM init, 503 'LLM not initialized. Set ACESTEP_INIT_LLM=true in .env to enable.', request {prompt,lyrics,temperature 0.85,param_obj{duration,bpm,key/key_scale,time_signature,language},time_signature fallback}, response {caption,lyrics,bpm,key_scale,time_signature,duration,vocal_language}",
+    "verdict": "confirmed",
+    "correction": "",
+    "evidence": [
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "51-160",
+      "quote": "detail=\"LLM not initialized. Set ACESTEP_INIT_LLM=true in .env to enable.\" ... \"vocal_language\": format_result.language or language or \"unknown\""
+     }
+    ]
+   },
+   {
+    "claim": "POST /v1/create_sample: {query'',instrumental false (string truthy accepted),vocal_language 'unknown',temperature 0.85}; response {caption,lyrics,bpm,keyscale,duration,timesignature,vocal_language}; same 503/500 LM errors",
+    "verdict": "confirmed",
+    "correction": "",
+    "evidence": [
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "162-246",
+      "quote": "instrumental = instrumental.lower() in {\"true\", \"1\", \"yes\"} ... return wrap_response({\"caption\": result.caption or \"\", ... \"vocal_language\": result.language or vocal_language})"
+     }
+    ]
+   },
+   {
+    "claim": "POST /v1/chat/completions: full request schema (model REQUIRED, messages REQUIRED, last-user-message parsing, tag/heuristic split, audio routing by task_type, batch_size default 1, lm_cfg_scale 2.0, audio_codes/cover_noise_strength etc.), non-streaming and SSE response shapes, errors 400/429/503/504/500, no lazy init",
+    "verdict": "partially_correct",
+    "correction": "Schema, parsing, routing, defaults, response shapes, heartbeat-every-2s SSE, and all error codes verified. However three accepted request fields are INERT: _to_generate_music_request (openrouter_adapter.py:321-413) never sets audio_code_string, cover_noise_strength, or use_cot_metas on the GenerateMusicRequest \u2014 so ChatCompletionRequest.audio_codes (openrouter_models.py:105) and even the auto cover-to-codes conversion result computed at openrouter_adapter.py:752-776 are silently DROPPED; code-control generation only works via /release_task. Also note the streaming error path emits finish_reason \"error\" (not \"stop\") before data: [DONE] (openrouter_adapter.py:532-536).",
+    "evidence": [
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "362-413",
+      "quote": "return GenerateMusicRequest( prompt=..., ..., audio_format=(audio_config.format or DEFAULT_AUDIO_FORMAT), )  # no audio_code_string / cover_noise_strength / use_cot_metas kwargs"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "753-782",
+      "quote": "resolved_audio_codes = req.audio_codes ... gen_request = _to_generate_music_request(req, prompt, lyrics, sample_query, reference_audio_path, src_audio_path, audio_codes=resolved_audio_codes)  # parameter unused inside"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "46, 519-523, 809-811",
+      "quote": "GENERATION_TIMEOUT = int(os.environ.get(\"ACESTEP_GENERATION_TIMEOUT\", \"600\")) ... timeout=2.0 ... yield _make_chunk(content=\".\")"
+     }
+    ]
+   },
+   {
+    "claim": "LoRA endpoints /v1/lora/{load,unload,toggle,scale,status}: request models (scale ge0 le1), response shapes, 500 not initialized, 400 detail vs envelope code distinctions",
+    "verdict": "confirmed",
+    "correction": "",
+    "evidence": [
+     {
+      "file": "acestep/api/http/lora_routes.py",
+      "lines": "16-34, 60-149",
+      "quote": "scale: float = Field(..., ge=0.0, le=1.0 ...) ... raise HTTPException(status_code=500, detail=\"Model not initialized\")"
+     }
+    ]
+   },
+   {
+    "claim": "POST /v1/reinitialize: empty body, verify_api_key, data {message, reloaded:[str]}, 500 if not initialized, envelope code 500 on failure",
+    "verdict": "confirmed",
+    "correction": "",
+    "evidence": [
+     {
+      "file": "acestep/api/http/reinitialize_route.py",
+      "lines": "25-106",
+      "quote": "raise HTTPException(status_code=500, detail=\"Service not initialized\") ... return wrap_response({\"message\": message, \"reloaded\": reloaded})"
+     }
+    ]
+   },
+   {
+    "claim": "Training endpoints /v1/training/{start,start_lokr,stop,status,load_tensor_info,export}: request field names/defaults/ranges, response shapes, 400 already-training, 404 no checkpoints, loss_history last 1000",
+    "verdict": "confirmed",
+    "correction": "All StartTrainingRequest/StartLoKRTrainingRequest/ExportLoRARequest fields, ranges and defaults verified at train_api_models.py:13-58; route behaviors at train_api_lora_start_route.py:28-153, train_api_lokr_start_route.py (response 'LoKR training started' + tensor_dir/output_dir/config), train_api_service.py:52-183; loss_history[-1000:] at lora_start_route.py:127.",
+    "evidence": [
+     {
+      "file": "acestep/api/train_api_models.py",
+      "lines": "13-58",
+      "quote": "lora_rank: int = Field(default=64, ge=1, le=256 ...) learning_rate: float = Field(default=1e-4, gt=0.0 ...) / LoKr learning_rate default 0.03, train_epochs default 500"
+     },
+     {
+      "file": "acestep/api/train_api_service.py",
+      "lines": "52-183",
+      "quote": "@app.post(\"/v1/training/stop\") ... return wrap_response({\"message\": \"Stopping training...\"}) ... raise HTTPException(status_code=404, detail=\"No checkpoints found\")"
+     }
+    ]
+   },
+   {
+    "claim": "Dataset endpoints /v1/dataset/{scan,load,auto_label,auto_label_async,auto_label_status[/{task_id}],preprocess,preprocess_async,preprocess_status[/{task_id}],save,samples,sample/{idx} GET+PUT}: request models, alias hunk_size/hunksize/batchsize, response shapes, status idle/running/completed/failed, 404 unknown task",
+    "verdict": "confirmed",
+    "correction": "All verified (train_api_dataset_models.py:10-123 incl. root_validator legacy aliases at :47-66; scan/load routes :20-101; auto_label sync :28-119; async :30-208; status routes :19-104 and auto_label_status_route.py:19-44; preprocess routes :26-200; sample routes :19-110). One behavioral nuance the analyst omitted: PUT /v1/dataset/sample forces lyrics='[Instrumental]' and language='unknown' whenever is_instrumental=true, overriding supplied values (train_api_dataset_sample_routes.py:95,99).",
+    "evidence": [
+     {
+      "file": "acestep/api/train_api_dataset_models.py",
+      "lines": "44-66",
+      "quote": "chunk_size: int = Field(default=16, ge=1 ...) ... for key in (\"hunk_size\", \"hunksize\"):"
+     },
+     {
+      "file": "acestep/api/train_api_dataset_sample_routes.py",
+      "lines": "95-99",
+      "quote": "lyrics=request.lyrics if not request.is_instrumental else \"[Instrumental]\", ... language=\"unknown\" if request.is_instrumental else request.language,"
+     }
+    ]
+   },
+   {
+    "claim": "TASK LIFECYCLE: create/store record fields, asyncio.Queue + workers=1 pin, ACESTEP_QUEUE_WORKERS workers, lazy init on first job blocking loop, mark_running progress>=0.01, cache key ace_step_v1.5_<id> TTL 7d, ThreadPoolExecutor generation, throttled progress callback, success result dict fields, mark_failed full traceback, status int mapping, 24h store purge / 300s cleanup, batch semantics, OpenRouter same queue with done_event/progress_queue",
+    "verdict": "partially_correct",
+    "correction": "Nearly all confirmed (store.py:15-205; release_task_route.py:66-85; server_cli.py:89-96 workers=1; api_server.py:109-113,194-195; job_runtime_state.py:11-61; job_execution_runtime.py:50-103; job_blocking_generation.py:132-159; worker_loops.py:9-57; inference.py:243; job_result_payload.py:54-137). One material error: 'ERROR SHAPE: failed jobs => result[0].error = full Python traceback string' is only the store-fallback shape. On failure update_terminal_job_cache writes a cache record WITHOUT an error field (local_cache_updates.py:115-124), and /query_result reads the cache first \u2014 so the traceback is normally NOT exposed via /query_result; it lives only in the in-memory record (store.mark_failed) and reaches OpenRouter clients via rec.error (worker_loops.py:41-42).",
+    "evidence": [
+     {
+      "file": "acestep/api/job_execution_runtime.py",
+      "lines": "89-103",
+      "quote": "error_traceback = traceback.format_exc() ... job_store.mark_failed(job_id, error_traceback); update_terminal_job_cache_fn(..., result=None, status=\"failed\", ...)"
+     },
+     {
+      "file": "acestep/api/jobs/store.py",
+      "lines": "114-122, 159-177",
+      "quote": "record.progress = max(record.progress, 0.01) ... if record.status in (\"succeeded\", \"failed\"): ... now - finish_time > max_age"
+     },
+     {
+      "file": "acestep/api/jobs/worker_loops.py",
+      "lines": "38-45",
+      "quote": "await rec.progress_queue.put({\"type\": \"result\", \"result\": rec.result}) ... rec.done_event.set()"
+     }
+    ]
+   },
+   {
+    "claim": "FILE OUTPUTS: temp_audio_dir = tmp_root/api_audio (tmp_root = ACESTEP_TMPDIR or <repo>/.cache/acestep/tmp), deterministic UUID filename from params, formats flac|mp3|opus|aac|wav|wav32 with silent flac fallback, MP3 128k/48kHz defaults, /v1/audio URL encoding, raw_audio_paths absolute, uploads ref_audio_/ctx_audio_ mkstemp deleted after job",
+    "verdict": "confirmed",
+    "correction": "Minor precision: the per-save format fallback is at audio_utils.py:217-220 (falls back to AudioSaver.default_format, which inference.py:920-921 constructs from the request format and which itself falls back to flac at :129-132). Also note lifespan redirects TMPDIR/TEMP/TMP to tmp_root (lifespan_runtime.py:73-80), so uploaded ref/src temp files land under .cache/acestep/tmp by default too.",
+    "evidence": [
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "60-61, 135-136",
+      "quote": "tmp_root = (os.getenv(\"ACESTEP_TMPDIR\") or os.path.join(cache_root, \"tmp\")).strip() ... app.state.temp_audio_dir = os.path.join(tmp_root, \"api_audio\")"
+     },
+     {
+      "file": "acestep/audio_utils.py",
+      "lines": "117-120, 217-220",
+      "quote": "MP3_DEFAULT_BITRATE = \"128k\" ... MP3_DEFAULT_SAMPLE_RATE = 48000 ... if format not in [\"flac\", \"wav\", \"mp3\", \"wav32\", \"opus\", \"aac\"]: ... format = self.default_format"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "243, 920-921, 1017-1025",
+      "quote": "batch_size: int = 2 ... audio_saver = AudioSaver(default_format=audio_format) ... audio_key = generate_uuid_from_params(audio_params)"
+     }
+    ]
+   },
+   {
+    "claim": "HEALTH narrative: no readiness endpoint, ACESTEP_NO_INIT default true, lazy first-job init blocks event loop so /health may hang, /v1/init runs in executor, reports models_initialized:false / loaded_model:null until models load, after success loaded_model='acestep-v15-turbo'",
+    "verdict": "partially_correct",
+    "correction": "All correct EXCEPT 'loaded_model:null until models load': /health's loaded_model is inventory['default_model'] = get_model_name(app.state._config_path), and _config_path is set at startup to os.getenv('ACESTEP_CONFIG_PATH','acestep-v15-turbo') \u2014 so loaded_model reports the CONFIGURED primary model name (e.g. 'acestep-v15-turbo') even while models_initialized is false. A readiness poll must key on models_initialized, never on loaded_model being non-null. ACESTEP_NO_INIT default True confirmed (startup_model_init.py:185); lazy init runs do_model_initialization synchronously inside the async worker (job_runtime_state.py:34-61); /v1/init uses run_in_executor (model_service_routes.py:196-211).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "64, 119-121, 156-159",
+      "quote": "primary_model = get_model_name(getattr(app.state, \"_config_path\", \"\")) ... \"default_model\": primary_model or None ... \"loaded_model\": inventory[\"default_model\"]"
+     },
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "113",
+      "quote": "app.state._config_path = os.getenv(\"ACESTEP_CONFIG_PATH\", \"acestep-v15-turbo\")"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "185",
+      "quote": "no_init = env_bool(\"ACESTEP_NO_INIT\", True)"
+     }
+    ]
+   },
+   {
+    "claim": "LM PLAN ENDPOINTS: /v1/create_sample, /format_input, /release_task with analysis_only (plus full_analysis_only / extract_codes_only), /create_random_sample canned",
+    "verdict": "confirmed",
+    "correction": "Result dicts verified at job_analysis_runtime.py:38-114 (analysis_only result has generation_info 'Analysis Only Mode Complete', dit_model 'None (Analysis Only)', status_message 'Success'). Nuance: because analysis_only's status_message is 'Success' (not one of the two special strings), its /query_result item is reshaped by the standard cache writer (top-level bpm/keyscale folded into metas; generation_info/dit_model survive). Only full_analysis_only/extract_codes_only results pass through verbatim as result_data=[full dict].",
+    "evidence": [
+     {
+      "file": "acestep/api/job_analysis_runtime.py",
+      "lines": "100-114",
+      "quote": "\"generation_info\": \"Analysis Only Mode Complete\", \"status_message\": \"Success\", ... \"dit_model\": \"None (Analysis Only)\""
+     },
+     {
+      "file": "acestep/api/jobs/local_cache_updates.py",
+      "lines": "53-58",
+      "quote": "if result.get(\"status_message\") in (\"Full Hardware Analysis Success\", \"Audio Codes Extraction Success\"): result_data = [result]"
+     }
+    ]
+   },
+   {
+    "claim": "PROGRESS REPORTING: progress float 0-1 clamped, in result[0] for non-terminal jobs, stage string, global progress_text last log line, throttle >=1%/stage/0.5s, training tasks report {status,progress str,current,total}, SSE heartbeats",
+    "verdict": "confirmed",
+    "correction": "Clamp at store.py:154 (update_progress); throttle at job_blocking_generation.py:141-145; log buffer last_message at log_capture.py:14-21 installed at api_server.py:183. Note store-derived SUCCESS items carry no progress field; cache success records carry progress 1.0 (as the analyst's parenthetical correctly states).",
+    "evidence": [
+     {
+      "file": "acestep/api/job_blocking_generation.py",
+      "lines": "141-145",
+      "quote": "if (value_f - last_progress[\"value\"] >= 0.01 or stage != last_progress[\"stage\"] or (now - last_progress[\"time\"]) >= 0.5):"
+     },
+     {
+      "file": "acestep/api/jobs/store.py",
+      "lines": "154",
+      "quote": "record.progress = max(0.0, min(1.0, float(progress)))"
+     }
+    ]
+   },
+   {
+    "claim": "STATUSES list: store strings queued/running/succeeded/failed; int map 0/0/1/2 with unknown->2; stale-running->2; unknown task {result:'[]',status:0}; dataset task statuses running/completed/failed/idle",
+    "verdict": "confirmed",
+    "correction": "STATUS_MAP at server_utils.py:10; map_status default 2 at :118-121. One micro-nuance: a cache record missing its status field maps to 1 in _build_running_result_payload (query_result_service.py:58) \u2014 not reachable from current writers.",
+    "evidence": [
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "10, 118-121",
+      "quote": "STATUS_MAP = {\"queued\": 0, \"running\": 0, \"succeeded\": 1, \"failed\": 2} ... return STATUS_MAP.get(status, 2)"
+     }
+    ]
+   },
+   {
+    "claim": "OPEN QUESTIONS block (v0.1.8 unverifiable; /v1/models shadow; no auth on chat/completions; global progress_text; no LRC/quality-score in API; gpu_config batch limits; lazy-init hang; audio_format silent flac fallback; no body limit; in-memory store + 7d cache; CORS localhost)",
+    "verdict": "confirmed",
+    "correction": "All spot-checked: no .git directory in the checkout (tag pin unverifiable from tree); LRC utilities exist only in acestep/ui/gradio/events/results/lrc_utils.py and auto_score_time/auto_lrc_time only appear inside generation_info markdown (acestep/ui/gradio/events/results/generation_info.py:87-99); separate Gradio router exists at acestep/ui/gradio/api/api_routes.py; gpu_config defines max_batch_size_with_lm/max_batch_size_without_lm (acestep/gpu_config.py:232-233) \u2014 no clamp is applied in the API request path itself; LocalCache persists at .cache/acestep/local_redis (acestep/local_cache.py:45-53).",
+    "evidence": [
+     {
+      "file": "acestep/ui/gradio/events/results/generation_info.py",
+      "lines": "87-99",
+      "quote": "auto_score_time = time_costs.get('auto_score_time', 0.0) ... lines.append(f\"- LRC detection {songs_label}: {auto_lrc_time:.2f}s\")"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "232-233",
+      "quote": "max_batch_size_with_lm: int\n    max_batch_size_without_lm: int"
+     }
+    ]
+   }
+  ],
+  "missed": [
+   "--api-key flag reliability depends on launch mode: app = create_app() executes at module import (acestep/api_server.py:357) and set_api_key reads ACESTEP_API_KEY at that instant (:191-192). Via the console script (pyproject.toml [project.scripts] acestep-api = \"acestep.api_server:main\") the module is imported BEFORE main() writes the flag into os.environ, and uvicorn.run(\"acestep.api_server:app\", workers=1) reuses the cached module \u2014 so --api-key can be a silent no-op there. The shipped scripts bypass server_cli entirely: run_api_server.sh launches `python -m uvicorn acestep.api_server:app --host 0.0.0.0 --port 8001` (note: binds 0.0.0.0, not the CLI default 127.0.0.1). A TS-client deployment should set ACESTEP_API_KEY in the environment/.env, never rely on the flag.",
+   "Failed-job tracebacks are effectively unreachable via /query_result in the normal path: failure writes a terminal cache record with NO error field (acestep/api/jobs/local_cache_updates.py:115-124) and the cache shadows the store (query_result_service.py:170-182). A client only sees status 2 + stage 'failed'. The traceback is exposed only through the store fallback (cache miss/expiry) or through /v1/chat/completions' 500 detail (rec.error).",
+   "Store-derived success items have a field-name bug: query_result_service.py:91 reads metas['caption'] but job_result_payload.py:100 stores the key 'prompt', so prompt is always \"\" and lyrics is the ORIGINAL (not final) lyrics in that path. Rely on the cache-derived shape (which carries final caption/lyrics plus generation_info/seed_value/lm_model/dit_model) \u2014 or better, treat both shapes as possible.",
+   "validate_audio_path accepts RELATIVE paths with no '..' segment as-is (release_task_audio_paths.py:43-46); they resolve against the server process CWD. Also, because lifespan redirects TMPDIR to <repo>/.cache/acestep/tmp (lifespan_runtime.py:73-80), the 'system temp dir' that absolute paths must live in is effectively the repo cache tmp dir after startup.",
+   "OpenRouter /v1/chat/completions silently drops audio_codes, cover_noise_strength and use_cot_metas: _to_generate_music_request accepts an audio_codes argument but never maps it (or the other two fields) onto GenerateMusicRequest (openrouter_adapter.py:321-413), so even the in-route cover auto-conversion (:752-776) is discarded. Code-string control requires /release_task's audio_code_string.",
+   "lm_top_p >= 1.0 on /release_task is replaced with the default 0.9, not disabled (acestep/api/llm_generation_inputs.py:64-65); only lm_top_k <= 0 truly disables top-k (top_k=None at :133).",
+   "Two separate concurrency knobs: ACESTEP_QUEUE_WORKERS (async queue consumers, default 1, api_server.py:195) AND ACESTEP_API_WORKERS (ThreadPoolExecutor max_workers for blocking generation, default 1, lifespan_runtime.py:117-118). Both default to 1, serializing generation.",
+   "Invalid values for pydantic-validated fields (chunk_mask_mode/repaint_mode/lm_backend Literals, repaint_strength bounds) on /release_task surface as HTTP 500, not 422, because GenerateMusicRequest is constructed manually inside the route handler (release_task_request_builder.py:104) rather than by FastAPI body validation.",
+   "LocalCache JSON-serializes lists/dicts on set (acestep/local_cache.py:68-70) \u2014 this is why /query_result's 'result' is a JSON-encoded string in both cache and store paths; it is a process-singleton diskcache persisted at .cache/acestep/local_redis (results survive restarts up to the 7-day TTL even though the job store does not).",
+   "queue_position returned by /release_task counts ALL pending jobs in the shared pending_ids deque, including jobs submitted through /v1/chat/completions (release_task_route.py:80-82; openrouter_adapter.py:789-803).",
+   "In multipart /release_task, only the exact file-field names ref_audio/reference_audio and ctx_audio/src_audio are recognized as uploads (release_task_request_parser.py:110-111); camelCase aliases work only for path-string fields.",
+   "PUT /v1/dataset/sample/{idx} force-overrides: when is_instrumental=true the server writes lyrics='[Instrumental]' and language='unknown' regardless of the submitted values (train_api_dataset_sample_routes.py:95-99).",
+   "Streaming /v1/chat/completions can finish with finish_reason 'error' followed by data: [DONE] (openrouter_adapter.py:532-536); clients that only check for 'stop' will misread failures.",
+   "/v1/audio serves .opus/.aac files with the default audio/mpeg media type \u2014 the extension map only covers .mp3/.wav/.flac/.ogg (audio_route.py:32-39).",
+   "GET /v1/dataset/scan's response contains only {message, num_samples, samples} (no dataset_name/labeled_count, unlike /v1/dataset/load) and it also sets app.state.dataset_json_path to <audio_dir>/<dataset_name>.json as the default auto-label save path (train_api_dataset_scan_load_routes.py:42-51)."
+  ]
+ }
+}

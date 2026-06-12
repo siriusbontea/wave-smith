@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+.next/
+out/
+dist/
+
+# Runtime data (generated audio, sqlite db)
+data/
+
+# Engine clone (external pinned dependency)
+engine/
+
+# Env
+.env
+.env.local
+
+# OS / editor
+.DS_Store
+*.log

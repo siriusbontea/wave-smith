@@ -1,0 +1,808 @@
+{
+ "key": "models-runtime",
+ "mapped": {
+  "summary": "Mapped models + runtime operations for ACE-Step 1.5 at /Users/zathras/WAVESMITH_Project/engine/ACE-Step-1.5 (source-verified, read-only). Key findings: (a) Default DiT is acestep-v15-turbo, bundled in the unified HF repo ACE-Step/Ace-Step1.5 together with vae, Qwen3-Embedding-0.6B, and the default LM acestep-5Hz-lm-1.7B; optional sub-repos cover base/sft/turbo-shift variants, XL (4B) DiTs, and 0.6B/4B LMs. Capability gating in the API is binary via config.json is_turbo: turbo models report [text2music, repaint, cover, cover-nofsq]; everything else reports the full 7-task list \u2014 but README + Gradio UI gate Extract/Lego/Complete to PURE base models only (sft excluded), so the API's supported_task_types over-reports for sft. (b) With default flags NOTHING downloads at server start: ACESTEP_NO_INIT defaults to true (lazy). The unified repo (~10 GB; bf16 weights \u2248 DiT 4.7 + LM-1.7B 3.4 + TE 1.2 + VAE 0.33 GB) snapshots into <repo>/checkpoints/ on the first generation request or POST /v1/init, from HuggingFace (auto-fallback ModelScope based on a Google-reachability probe). No download-progress endpoint exists; progress is stderr/tqdm only, with the last log line surfaced as progress_text in /query_result responses. Critically, lazy init runs synchronously on the asyncio event loop, so /health stalls during the entire download+load. (c) /health (no auth) returns models_initialized/llm_initialized/loaded_model; it does not distinguish 'downloading' from 'not loaded'. (d) acestep-download (entry point acestep.model_downloader:main) pre-fetches: bare invocation downloads the main unified repo; --model/--all/--dir/--force/--token/--list supported. (e) On a 32 GB M2 Max: MPS detection reports ~75% of unified memory (~24 GB \u2192 tier6b borderline); MPS overrides force lm_backend=mlx (vllm impossible), no quantization, no torch.compile (redirected to mx.compile), no CPU offload; DiT runs via native MLX decoder (default on for mps/cpu), PyTorch dtype float32 on MPS, MLX VAE chunk auto-tuned (512 for \u226436 GB, override ACESTEP_MLX_VAE_CHUNK); LM loads via mlx-lm. DiT+1.7B LM fits comfortably in 32 GB unified memory. (f) Full .env.example list and exact api_server CLI flags (--host/--port/--api-key/--download-source/--init-llm/--lm-model-path/--no-init) documented with defaults; macOS-relevant extras (ACESTEP_LM_BACKEND=mlx, ACESTEP_MLX_VAE_CHUNK, ACESTEP_MLX_VAE_FP16, ACESTEP_MPS_DECODE_OFFLOAD) identified. (g) The update check lives in the launcher shell scripts (CHECK_UPDATE=\"true\" hardcoded in start_api_server_macos.sh) and PROMPTS interactively when remote differs \u2014 for unattended runs bypass the launcher (run `uv run acestep-api` directly; the Python server has no update check) or edit the script to CHECK_UPDATE=\"false\".",
+  "claims": [
+   {
+    "topic": "(a) Model registry: unified main repo + sub-model repos",
+    "claim": "The main HuggingFace repo is ACE-Step/Ace-Step1.5 and contains exactly 4 components downloaded as one snapshot: acestep-v15-turbo (default DiT), vae, Qwen3-Embedding-0.6B (text encoder), acestep-5Hz-lm-1.7B (default LM). Separately downloadable sub-repos: LMs acestep-5Hz-lm-0.6B and acestep-5Hz-lm-4B; DiTs acestep-v15-turbo-shift3, acestep-v15-sft, acestep-v15-base, acestep-v15-turbo-shift1, acestep-v15-turbo-continuous; XL 4B DiTs acestep-v15-xl-base, acestep-v15-xl-sft, acestep-v15-xl-turbo (all under the ACE-Step/ HF org, same ids on ModelScope). One community VAE: scragvae -> scragnog/Ace-Step-1.5-ScragVAE.",
+    "evidence": [
+     {
+      "file": "acestep/model_downloader.py",
+      "lines": "287-326",
+      "quote": "MAIN_MODEL_REPO = \"ACE-Step/Ace-Step1.5\" ... SUBMODEL_REGISTRY: Dict[str, str] = { \"acestep-5Hz-lm-0.6B\": \"ACE-Step/acestep-5Hz-lm-0.6B\", ... \"acestep-v15-xl-turbo\": \"ACE-Step/acestep-v15-xl-turbo\", } ... MAIN_MODEL_COMPONENTS = [\"acestep-v15-turbo\", \"vae\", \"Qwen3-Embedding-0.6B\", \"acestep-5Hz-lm-1.7B\"] ... DEFAULT_LM_MODEL = \"acestep-5Hz-lm-1.7B\" ... VAE_REGISTRY ... \"scragvae\": \"scragnog/Ace-Step-1.5-ScragVAE\""
+     },
+     {
+      "file": "acestep/api/model_download.py",
+      "lines": "8-20",
+      "quote": "MODEL_REPO_MAPPING = { \"acestep-v15-turbo\": \"ACE-Step/Ace-Step1.5\", \"acestep-5Hz-lm-1.7B\": \"ACE-Step/Ace-Step1.5\", \"vae\": \"ACE-Step/Ace-Step1.5\", \"Qwen3-Embedding-0.6B\": \"ACE-Step/Ace-Step1.5\", ... } DEFAULT_REPO_ID = \"ACE-Step/Ace-Step1.5\""
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(a) Default DiT and approximate sizes",
+    "claim": "Default DiT is acestep-v15-turbo (ACESTEP_CONFIG_PATH default, hardcoded fallback in both server and handler). Approximate bf16 weight sizes from the repo's own calibration constants: 2B DiT (turbo/base/sft) ~4.7 GB; XL 4B DiT ~9.0 GB; VAE ~0.33 GB; Qwen3-Embedding-0.6B text encoder ~1.2 GB; LM weights 0.6B=1.2 GB, 1.7B=3.4 GB, 4B=8.0 GB. Docs state ~10 GB disk for core models, consistent with the 4-component main repo (~9.6 GB of weights).",
+    "evidence": [
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "113",
+      "quote": "app.state._config_path = os.getenv(\"ACESTEP_CONFIG_PATH\", \"acestep-v15-turbo\")"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "148-164",
+      "quote": "MODEL_VRAM = { \"dit_turbo\": 4.7, \"dit_base\": 4.7, \"dit_xl_turbo\": 9.0, \"dit_xl_base\": 9.0, \"vae\": 0.33, \"text_encoder\": 1.2, ... } LM_VRAM = { \"0.6B\": {\"weights\": 1.2, ...}, \"1.7B\": {\"weights\": 3.4, ...}, \"4B\": {\"weights\": 8.0, ...} }"
+     },
+     {
+      "file": "docs/en/INSTALL.md",
+      "lines": "33",
+      "quote": "| Disk | ~10GB for core models |"
+     },
+     {
+      "file": "acestep/core/generation/handler/init_service_orchestrator.py",
+      "lines": "68-72",
+      "quote": "if config_path is None: config_path = \"acestep-v15-turbo\""
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(a) Capability matrix \u2014 task types per variant",
+    "claim": "Task constants: TASK_TYPES_TURBO = [text2music, repaint, cover, cover-nofsq]; TASK_TYPES_BASE adds extract, lego, complete (7 total). The API's GET /v1/models supported_task_types is decided ONLY by the is_turbo boolean in each checkpoint's config.json (turbo -> 4 tasks, non-turbo or missing config -> all 7). However the Gradio UI and README gate Extract/Lego/Complete more strictly to PURE base models (path contains 'base' but not 'sft'/'turbo'): README matrix says acestep-v15-base and acestep-v15-xl-base support Extract/Lego/Complete with CFG and 50 steps, while sft/xl-sft (CFG, 50 steps) and turbo/xl-turbo (no CFG, 8 steps) support only Text2Music/Cover/Repaint. So treat the API's 7-task report for sft models as over-broad; ground truth for capabilities is: turbo & sft -> text2music/cover/repaint(+cover-nofsq); pure base only -> + extract/lego/complete.",
+    "evidence": [
+     {
+      "file": "acestep/constants.py",
+      "lines": "76-89",
+      "quote": "TASK_TYPES_TURBO = [\"text2music\", \"repaint\", \"cover\", \"cover-nofsq\"] ... TASK_TYPES_BASE = [\"text2music\", \"repaint\", \"cover\", \"cover-nofsq\", \"extract\", \"lego\", \"complete\"]"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "33-46",
+      "quote": "config_path = os.path.join(checkpoint_dir, model_name, \"config.json\") ... is_turbo = config.get(\"is_turbo\", False); if is_turbo: return list(TASK_TYPES_TURBO); return list(TASK_TYPES_BASE)"
+     },
+     {
+      "file": "acestep/ui/gradio/events/generation/model_config.py",
+      "lines": "29-42,106-112",
+      "quote": "is_pure_base ... path contains \"base\" and excludes \"sft\" and \"turbo\" ... if is_pure_base: task_choices = TASK_TYPES_BASE ... else: task_choices = TASK_TYPES_TURBO"
+     },
+     {
+      "file": "README.md",
+      "lines": "258-276",
+      "quote": "| acestep-v15-base | ... Extract \u2705 Lego \u2705 Complete \u2705 | acestep-v15-sft | ... Extract \u274c Lego \u274c Complete \u274c | acestep-v15-turbo | ... \u274c \u274c \u274c ... same pattern for xl-base \u2705\u2705\u2705 / xl-sft \u274c\u274c\u274c / xl-turbo \u274c\u274c\u274c"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(b) What downloads on FIRST server start (default flags)",
+    "claim": "With default flags, NOTHING downloads at startup: env_bool(\"ACESTEP_NO_INIT\", True) means lazy mode is the default; the server prints 'Models will be lazy-loaded on first request' and accepts requests immediately. Model download+load happens on the first generation job (or POST /v1/init, or eager mode via ACESTEP_NO_INIT=false). When init runs, ensure_model_downloaded() snapshots the ENTIRE unified repo ACE-Step/Ace-Step1.5 into <project_root>/checkpoints (project_root = repo root, derived from the api_server.py file location), then the VAE/LM checks find their folders already present. Source selection: ACESTEP_DOWNLOAD_SOURCE env (huggingface/modelscope) else auto-detect by attempting a TCP connect to www.google.com:443 (reachable -> HuggingFace, else ModelScope), with automatic fallback to the other source on failure. Rough total: ~10 GB for the main repo (DiT 2B + VAE + text encoder + LM 1.7B). If ACESTEP_INIT_LLM resolves to enabled (default 'auto' -> tier decision; true on a 32GB Mac), the LM is also ensured (1.7B is already in the main repo).",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "185, 219-229",
+      "quote": "no_init = env_bool(\"ACESTEP_NO_INIT\", True) ... if no_init: print(\"[API Server] Models will be lazy-loaded on first request\") ... return"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "64-77",
+      "quote": "checkpoint_dir = os.path.join(project_root, \"checkpoints\") ... ensure_model_downloaded(dit_model_name, checkpoint_dir) ... ensure_model_downloaded(\"vae\", checkpoint_dir)"
+     },
+     {
+      "file": "acestep/api/model_download.py",
+      "lines": "44-58, 104-133",
+      "quote": "is_unified_repo = repo_id == DEFAULT_REPO_ID ... download_dir = local_dir ... snapshot_download(repo_id=repo_id, local_dir=download_dir, local_dir_use_symlinks=False) ... prefer_source = os.environ.get(\"ACESTEP_DOWNLOAD_SOURCE\", \"\").lower() ... use_huggingface = can_access_google()"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "100-102",
+      "quote": "def _get_project_root() -> str: current_file = os.path.abspath(__file__); return os.path.dirname(os.path.dirname(current_file))"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(b) Download progress observability",
+    "claim": "There is NO dedicated download-progress API endpoint. The full route list contains only /health, /v1/stats, /v1/models, /v1/model_inventory, /v1/init, /v1/reinitialize, /release_task, /query_result, /v1/audio, sample/format, LoRA, training, and OpenRouter-compat routes. The only API-visible signal is /query_result's progress_text field, which returns the last captured log line (a loguru sink plus a sys.stderr proxy feed a single-line LogBuffer; huggingface_hub tqdm bars write to stderr so download progress lines do land there) for tasks whose status is queued/running. Otherwise progress is only in process logs. Additionally, lazy init is a synchronous call executed inside an async function on the event loop (do_model_initialization called directly, not via executor), so during the first-request download+load the event loop blocks and even /health will not respond until init completes \u2014 a TypeScript client must use long HTTP timeouts or pre-warm via /v1/init (which DOES run in a thread executor) or pre-download via CLI.",
+    "evidence": [
+     {
+      "file": "acestep/api/job_runtime_state.py",
+      "lines": "45-61",
+      "quote": "print(\"[API Server] First request received \u2014 lazy-loading models...\") ... do_model_initialization(app=_AppProxy(app_state), **init_kwargs)  # direct sync call inside `async def ensure_models_initialized`"
+     },
+     {
+      "file": "acestep/api/log_capture.py",
+      "lines": "8-67",
+      "quote": "class LogBuffer: ... self.last_message = \"Waiting\" ... class StderrLogger: ... writes to terminal stderr and update in-memory buffer ... install_log_capture(...)"
+     },
+     {
+      "file": "acestep/api/http/query_result_service.py",
+      "lines": "59, 133-138",
+      "quote": "\"progress_text\": get_log_last_message() ... current_log = get_log_last_message() if status_int == 0 else record.progress_text"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "195-211",
+      "quote": "@app.post(\"/v1/init\") ... result = await loop.run_in_executor(app.state.executor, lambda: initialize_models_for_request(...))"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(c) Startup/readiness semantics and /health reporting",
+    "claim": "GET /health requires no API key and returns wrapped JSON {data: {status: \"ok\", service: \"ACE-Step API\", version: \"1.0\", models_initialized: bool(app.state._initialized), llm_initialized, loaded_model, loaded_lm_model}, code: 200, ...}. status is ALWAYS \"ok\" once the HTTP server is up \u2014 readiness must be inferred from models_initialized (false while lazy/not yet loaded, true after DiT load succeeds) and llm_initialized. There is no distinct 'downloading' state; during a lazy first-request init the event loop is blocked so /health simply hangs. If init fails, app.state._init_error is set and every subsequent generation request raises that error (jobs fail) while models_initialized stays false; the error string is only visible via failed job results, not /health. Eager loading (ACESTEP_NO_INIT=false) performs download+load inside the FastAPI lifespan before the server starts accepting connections, and raises RuntimeError (killing startup) if the primary DiT fails. /v1/models and /v1/model_inventory (API-key protected) report per-model {name, is_default, is_loaded, supported_task_types} by scanning the checkpoints dir, plus lm_models and llm_initialized.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "146-161",
+      "quote": "@app.get(\"/health\") ... return wrap_response({\"status\": \"ok\", ... \"models_initialized\": bool(getattr(app.state, \"_initialized\", False)), \"llm_initialized\": ..., \"loaded_model\": ..., \"loaded_lm_model\": ...})"
+     },
+     {
+      "file": "acestep/api/job_runtime_state.py",
+      "lines": "26-43",
+      "quote": "if getattr(app_state, \"_initialized\", False): return ... if getattr(app_state, \"_init_error\", None): raise RuntimeError(app_state._init_error)"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "89-93",
+      "quote": "if not ok: app.state._init_error = status_msg ... raise RuntimeError(status_msg)\n    app.state._initialized = True"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "102-117",
+      "quote": "models = [{\"name\": name, \"is_default\": ..., \"is_loaded\": name in loaded_dit_models, \"supported_task_types\": _read_model_supported_tasks(...)} ...]"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(d) acestep-download CLI exact usage",
+    "claim": "Console script acestep-download = acestep.model_downloader:main (pyproject [project.scripts]). To pre-fetch the default models run with no arguments: `uv run acestep-download` (or `acestep-download` in the venv) from the repo root \u2014 it downloads the main unified repo (vae, text encoder, acestep-v15-turbo DiT, LM 1.7B) into ./checkpoints (cwd-based: get_project_root() = ACESTEP_PROJECT_ROOT env or os.getcwd(); checkpoints dir overridable via --dir/-d or ACESTEP_CHECKPOINTS_DIR). Flags: --model/-m NAME ('main' or a SUBMODEL_REGISTRY key; sub-model downloads pull main first unless --skip-main), --all/-a, --list/-l, --dir/-d PATH, --force/-f, --token/-t HF_TOKEN, --skip-main. Equivalent manual command documented in its epilog: `huggingface-cli download ACE-Step/Ace-Step1.5 --local-dir ./checkpoints`. Skip-if-exists check: a component counts as present if its dir contains any known weights file (model.safetensors, diffusion_pytorch_model.safetensors, *.index.json, etc.).",
+    "evidence": [
+     {
+      "file": "pyproject.toml",
+      "lines": "96-100",
+      "quote": "[project.scripts] acestep = \"acestep.acestep_v15_pipeline:main\"; acestep-api = \"acestep.api_server:main\"; acestep-download = \"acestep.model_downloader:main\"; acestep-openrouter = ..."
+     },
+     {
+      "file": "acestep/model_downloader.py",
+      "lines": "869-927, 969-973",
+      "quote": "acestep-download                          # Download main model (includes LM 1.7B) ... --model/-m, --all/-a, --list/-l, --dir/-d, --force/-f, --token/-t, --skip-main ... # Default: download main model (includes default LM 1.7B)"
+     },
+     {
+      "file": "acestep/model_downloader.py",
+      "lines": "329-359, 362-383",
+      "quote": "env_root = os.environ.get(\"ACESTEP_PROJECT_ROOT\") ... return Path(os.getcwd()) ... env_dir = os.environ.get(\"ACESTEP_CHECKPOINTS_DIR\") ... return get_project_root() / \"checkpoints\" ... weight_filenames = (\"model.safetensors\", ...)"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(e) Apple Silicon (32GB M2 Max) memory/config guidance",
+    "claim": "MPS detection: memory = torch.mps.recommended_max_memory() or fallback hw.memsize*0.75 (32 GB -> ~24 GB), so an M2 Max 32GB lands in tier6b (20-24 GB; recommended LM 1.7B, batch up to 8, durations up to 480s) \u2014 possibly 'unlimited' if MPS reports >24 GB, so pin ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-1.7B rather than relying on auto-pick. On macOS+MPS, get_gpu_config() force-overrides regardless of tier: lm_backend_restriction=pt_mlx_only (vllm requires CUDA), recommended_backend=mlx, offload_to_cpu_default=False and offload_dit_to_cpu_default=False (unified memory makes offload pointless), quantization_default=False (torchao unsupported on MPS), compile_model_default=False (torch.compile unsupported; if compile requested it is redirected to mx.compile for MLX components only). PyTorch model dtype on MPS is float32 (only cuda gets bf16/fp16, xpu bf16). The auto-offload heuristic in startup_model_init ('GPU < 20GB -> offload_to_cpu') CAN re-enable offload on a Mac reporting <20 GB unless overridden \u2014 set ACESTEP_OFFLOAD_TO_CPU=false explicitly on macOS; with ~24 GB reported on a 32 GB M2 Max it stays off. DiT+1.7B LM total weights \u2248 4.7+3.4+1.2+0.33 \u2248 9.6 GB, fitting easily in 32 GB unified memory; the 4B LM (8 GB) also fits if desired.",
+    "evidence": [
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "589-628",
+      "quote": "elif hasattr(torch.backends, \"mps\") ... mps_module.recommended_max_memory() ... # MPS can use up to ~75% of unified memory ... memory_gb = (total_system_bytes / (1024**3)) * 0.75"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "813-891",
+      "quote": "On macOS with MPS ... compile_model_default = False ... quantization_default = False ... recommended_backend = \"mlx\" ... lm_backend_restriction = \"pt_mlx_only\" ... offload_to_cpu_default = False ... mlx_vae_chunk_size=_auto_mlx_vae_chunk_size(gpu_memory_gb) if _mps else 512"
+     },
+     {
+      "file": "acestep/core/generation/handler/init_service_orchestrator.py",
+      "lines": "91-101",
+      "quote": "elif resolved_device == \"cuda\": ... torch.bfloat16 ... else: self.dtype = torch.bfloat16 if resolved_device == \"xpu\" else torch.float32"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "36-59",
+      "quote": "auto_offload = gpu_memory_gb > 0 and gpu_memory_gb < VRAM_AUTO_OFFLOAD_THRESHOLD_GB ... offload_to_cpu_env = os.getenv(\"ACESTEP_OFFLOAD_TO_CPU\") ... else: offload_to_cpu = auto_offload"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "428-449",
+      "quote": "\"tier6b\": { # 20-24GB ... \"max_batch_size_with_lm\": 8, ... \"recommended_lm_model\": \"acestep-5Hz-lm-1.7B\", ... \"offload_to_cpu_default\": False, \"quantization_default\": False }"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(e) What the MLX path changes",
+    "claim": "Three MLX components, all enabled automatically when device is mps (or cpu) on Apple Silicon: (1) MLX DiT \u2014 initialize_service(use_mlx_dit=True default) converts the loaded PyTorch DiT into a native MLXDiTDecoder (MLXDiTDecoder.from_config + convert_and_load); falls back to PyTorch silently on failure; status appears in the init message ('MLX DiT: Active (native MLX)'). (2) MLX VAE \u2014 always attempted on mps/cpu; decode chunk size auto-tuned by unified memory (<=16GB->256, <=36GB->512, <=64GB->1024, else 2048; min 192), override with ACESTEP_MLX_VAE_CHUNK; optional fp16 conversion via ACESTEP_MLX_VAE_FP16=1 (default fp32). (3) MLX LM backend \u2014 ACESTEP_LM_BACKEND=mlx (set by start_api_server_macos.sh) loads the 5Hz LM via mlx_lm.utils.load (with a 'model.' weight-key prefix remap fallback for ACE-Step checkpoints); requested vllm on mps is auto-redirected to MLX; failure falls back to PyTorch. Also relevant: decoded wavs are offloaded to CPU on MPS when effective MPS memory <32 GB (override ACESTEP_MPS_DECODE_OFFLOAD).",
+    "evidence": [
+     {
+      "file": "acestep/core/generation/handler/init_service_setup.py",
+      "lines": "114-146",
+      "quote": "if use_mlx_dit and device in (\"mps\", \"cpu\"): mlx_ok = self._init_mlx_dit(...) ... mlx_vae_status = \"Disabled\"; if device in (\"mps\", \"cpu\"): mlx_vae_ok = self._init_mlx_vae()"
+     },
+     {
+      "file": "acestep/core/generation/handler/mlx_dit_init.py",
+      "lines": "26-44",
+      "quote": "mlx_decoder = MLXDiTDecoder.from_config(self.config); convert_and_load(self.model, mlx_decoder) ... self.use_mlx_dit = True"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "779-810",
+      "quote": "_auto_mlx_vae_chunk_size ... env_val = os.environ.get(\"ACESTEP_MLX_VAE_CHUNK\") ... if mem_gb <= 16: size = 256 elif mem_gb <= 36: size = 512 elif mem_gb <= 64: size = 1024 else: size = 2048"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "678-702, 2943-3013",
+      "quote": "if backend == \"mlx\" or (backend == \"vllm\" and device == \"mps\"): ... self._load_mlx_model(full_lm_model_path) ... from mlx_lm.utils import load as mlx_load ... retrying with 'model.' prefix remapping"
+     },
+     {
+      "file": "acestep/core/generation/handler/memory_utils.py",
+      "lines": "118-127",
+      "quote": "override = os.environ.get(\"ACESTEP_MPS_DECODE_OFFLOAD\") ... if self.device == \"mps\": mem_gb = self._get_effective_mps_memory_gb(); if mem_gb is not None and mem_gb >= 32: return False; return True"
+     },
+     {
+      "file": "acestep/core/generation/handler/mlx_vae_init.py",
+      "lines": "17, 48",
+      "quote": "conversion based on ``ACESTEP_MLX_VAE_FP16`` ... use_fp16 = os.environ.get(\"ACESTEP_MLX_VAE_FP16\", \"0\").lower() in ("
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(f) .env.example variables \u2014 complete list with defaults",
+    "claim": ".env.example contains exactly these variables (api_server loads .env once with override=False, so real env vars win): ACTIVE \u2014 ACESTEP_CONFIG_PATH=acestep-v15-turbo (DiT path); ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-1.7B (options 0.6B/1.7B/4B); ACESTEP_DEVICE=auto (auto/cuda/cpu/xpu; note: 'mps' is valid in code via device resolution \u2014 auto picks mps on Mac); ACESTEP_LM_BACKEND=vllm (vllm/pt \u2014 code also accepts mlx; on macOS set mlx, vllm is impossible on MPS); ACESTEP_INIT_LLM=auto (auto/true/false; false disables thinking mode, CoT, sample mode, format mode). COMMENTED \u2014 ACESTEP_CHECKPOINTS_DIR (shared model dir); ACESTEP_DOWNLOAD_SOURCE=auto (huggingface/modelscope); ACESTEP_API_KEY (sk-...); PORT=7860 (Gradio only, NOT the API server); SERVER_NAME=127.0.0.1 (Gradio only); LANGUAGE=en (Gradio only); ACESTEP_BATCH_SIZE=2 (Gradio default batch); ACESTEP_NO_INIT (comment: 'By default models are lazy-loaded on first request... Set to false to force eager model loading'). macOS-relevant: ACESTEP_DEVICE=auto resolves to mps; ACESTEP_LM_BACKEND must be mlx or pt; ACESTEP_INIT_LLM, ACESTEP_NO_INIT, ACESTEP_CHECKPOINTS_DIR all apply. PORT/SERVER_NAME/LANGUAGE/ACESTEP_BATCH_SIZE are irrelevant to the REST API server (it uses ACESTEP_API_HOST/ACESTEP_API_PORT instead).",
+    "evidence": [
+     {
+      "file": ".env.example",
+      "lines": "1-84",
+      "quote": "ACESTEP_CONFIG_PATH=acestep-v15-turbo ... ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-1.7B ... ACESTEP_DEVICE=auto ... ACESTEP_LM_BACKEND=vllm ... ACESTEP_INIT_LLM=auto ... # ACESTEP_CHECKPOINTS_DIR= ... # ACESTEP_DOWNLOAD_SOURCE=auto ... # ACESTEP_API_KEY=sk-your-secret-key ... # PORT=7860 ... # SERVER_NAME=127.0.0.1 ... # LANGUAGE=en ... # ACESTEP_BATCH_SIZE=2 ... # ACESTEP_NO_INIT=true"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "161-180",
+      "quote": "_load_project_env ... load_dotenv(env_path, override=False)"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "41",
+      "quote": "VALID_LM_BACKENDS = {\"vllm\", \"pt\", \"mlx\"}"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(f) api_server CLI flags \u2014 complete list with defaults",
+    "claim": "acestep-api (acestep.api_server:main -> run_api_server_main) accepts exactly 7 flags: --host (default env ACESTEP_API_HOST or 127.0.0.1); --port (int, default env ACESTEP_API_PORT or 8001); --api-key (default env ACESTEP_API_KEY); --download-source (choices huggingface/modelscope/auto, default env ACESTEP_DOWNLOAD_SOURCE or auto); --init-llm (store_true; default from env_bool(ACESTEP_INIT_LLM, False) \u2014 sets ACESTEP_INIT_LLM=true when given); --lm-model-path (default env ACESTEP_LM_MODEL_PATH or \"\"); --no-init (store_true; default env_bool(ACESTEP_NO_INIT, False) \u2014 sets ACESTEP_NO_INIT=true). It then runs uvicorn 'acestep.api_server:app' with reload=False, workers=1 (workers MUST stay 1: in-memory queue/job store). Note asymmetry: passing --no-init sets the env var, but NOT passing it leaves the env untouched and the runtime default in startup_model_init is lazy=True anyway; to force eager loading you must set ACESTEP_NO_INIT=false in env/.env (there is no --init CLI flag). Additional server tunables read only from env: ACESTEP_QUEUE_MAXSIZE=200, ACESTEP_QUEUE_WORKERS=1, ACESTEP_AVG_JOB_SECONDS=5.0, ACESTEP_AVG_WINDOW=50, ACESTEP_API_WORKERS=1 (executor threads), ACESTEP_TMPDIR, ACESTEP_CONFIG_PATH2/ACESTEP_CONFIG_PATH3 (optional second/third DiT handler slots), ACESTEP_USE_FLASH_ATTENTION (default true; harmless no-op on macOS since flash-attn requires CUDA), ACESTEP_OFFLOAD_TO_CPU / ACESTEP_OFFLOAD_DIT_TO_CPU / ACESTEP_COMPILE_MODEL (default false), ACESTEP_VAE_CHECKPOINT, ACESTEP_GENERATION_TIMEOUT=600.",
+    "evidence": [
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "23-96",
+      "quote": "--host default=os.getenv(\"ACESTEP_API_HOST\", \"127.0.0.1\") ... --port default=int(os.getenv(\"ACESTEP_API_PORT\", \"8001\")) ... --api-key ... --download-source choices=[\"huggingface\", \"modelscope\", \"auto\"] ... --init-llm ... --lm-model-path ... --no-init ... uvicorn.run(\"acestep.api_server:app\", ..., reload=False, workers=1)"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "194-198",
+      "quote": "QUEUE_MAXSIZE = int(os.getenv(\"ACESTEP_QUEUE_MAXSIZE\", \"200\")); WORKER_COUNT = int(os.getenv(\"ACESTEP_QUEUE_WORKERS\", \"1\")); INITIAL_AVG_JOB_SECONDS = float(os.getenv(\"ACESTEP_AVG_JOB_SECONDS\", \"5.0\")); AVG_WINDOW = int(os.getenv(\"ACESTEP_AVG_WINDOW\", \"50\"))"
+     },
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "100-117",
+      "quote": "config_path2 = os.getenv(\"ACESTEP_CONFIG_PATH2\", \"\").strip(); config_path3 = os.getenv(\"ACESTEP_CONFIG_PATH3\", \"\").strip() ... max_workers = int(os.getenv(\"ACESTEP_API_WORKERS\", \"1\"))"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "49-62",
+      "quote": "config_path = os.getenv(\"ACESTEP_CONFIG_PATH\", \"acestep-v15-turbo\"); device = os.getenv(\"ACESTEP_DEVICE\", \"auto\"); use_flash_attention = env_bool(\"ACESTEP_USE_FLASH_ATTENTION\", True) ... offload_dit_to_cpu = env_bool(\"ACESTEP_OFFLOAD_DIT_TO_CPU\", False); compile_model = env_bool(\"ACESTEP_COMPILE_MODEL\", False)"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "(g) Startup update-check behavior and disabling it",
+    "claim": "The update check is purely shell-script-level; the Python server (acestep-api / uvicorn) performs NO update check. start_api_server_macos.sh hardcodes CHECK_UPDATE=\"true\" (line 43) and _startup_update_check() (lines 69-131) runs `git fetch origin` with a 10s timeout (gtimeout/timeout/no-timeout fallback), compares HEAD to origin/<branch>, and if they differ BLOCKS on an interactive `read -rp \"Update now before starting? (Y/N)\"` prompt; choosing Y runs check_update.sh which does `git reset --hard origin/<branch>` (with stash/backup logic) \u2014 this would silently move you off the pinned v0.1.8 tag. Because CHECK_UPDATE is a plain assignment (not :=default), exporting CHECK_UPDATE=false does NOT override it for the API launcher (it does work for start_gradio_ui_macos.sh, which uses `: \"${CHECK_UPDATE:=true}\"`). For unattended runs: (1) preferred \u2014 bypass the launcher entirely and run `uv run acestep-api --host 127.0.0.1 --port 8001` (or `.venv/bin/acestep-api`), which also skips the launcher's embedded-Python/MLX pip-fix logic; or (2) edit line 43 to CHECK_UPDATE=\"false\" (note: tracked file, the edit is lost on git update). Also note: on a detached-HEAD tag checkout, `git rev-parse --abbrev-ref HEAD` returns 'HEAD' and origin/HEAD usually resolves to the default branch, so the prompt is likely to trigger \u2014 another reason to bypass the launcher.",
+    "evidence": [
+     {
+      "file": "start_api_server_macos.sh",
+      "lines": "42-44, 69-131",
+      "quote": "# Update check on startup (set to \"false\" to disable)\nCHECK_UPDATE=\"true\" ... _startup_update_check() { [[ \"$CHECK_UPDATE\" != \"true\" ]] && return 0 ... gtimeout 10 git fetch origin --quiet ... read -rp \"Update now before starting? (Y/N): \" update_choice ... bash \"$SCRIPT_DIR/check_update.sh\""
+     },
+     {
+      "file": "check_update.sh",
+      "lines": "147-148, 276-278",
+      "quote": "read -rp \"Do you want to update now? (Y/N): \" UPDATE_CHOICE ... if \"$GIT_PATH\" reset --hard \"origin/$CURRENT_BRANCH\" &>/dev/null; then"
+     },
+     {
+      "file": "start_gradio_ui_macos.sh",
+      "lines": "141",
+      "quote": ": \"${CHECK_UPDATE:=true}\"  # env-overridable default, unlike the API launcher"
+     },
+     {
+      "file": "start_api_server.sh",
+      "lines": "41-42, 53",
+      "quote": "CHECK_UPDATE=\"true\" ... [[ \"$CHECK_UPDATE\" != \"true\" ]] && return 0  # Linux launcher has identical hardcoded behavior"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Gotcha: ACESTEP_CHECKPOINTS_DIR is inconsistently honored by the API server",
+    "claim": "Two download code paths coexist. The api-server's pre-download step (startup_model_init.do_model_initialization) ALWAYS uses <repo_root>/checkpoints (os.path.join(project_root, \"checkpoints\")) and ignores ACESTEP_CHECKPOINTS_DIR; the model inventory in /health//v1/models likewise scans <repo_root>/checkpoints. But handler.initialize_service and the acestep-download CLI DO honor ACESTEP_CHECKPOINTS_DIR (and ACESTEP_PROJECT_ROOT). Setting ACESTEP_CHECKPOINTS_DIR with the API server therefore risks double downloads (server downloads to repo/checkpoints, handler downloads/loads from the env dir) and inventory mismatches. For the WAVESMITH stack, the safe choice is to NOT set ACESTEP_CHECKPOINTS_DIR and let everything live in <repo>/checkpoints, pre-seeded by running acestep-download FROM the repo root.",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "64-70",
+      "quote": "checkpoint_dir = os.path.join(project_root, \"checkpoints\") ... ensure_model_downloaded(dit_model_name, checkpoint_dir)"
+     },
+     {
+      "file": "acestep/core/generation/handler/init_service_orchestrator.py",
+      "lines": "122-128",
+      "quote": "env_ckpt = os.environ.get(\"ACESTEP_CHECKPOINTS_DIR\"); if env_ckpt: checkpoint_dir = str(get_checkpoints_dir()) elif project_root: checkpoint_dir = os.path.join(project_root, \"checkpoints\")"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "60-61",
+      "quote": "project_root = get_project_root(); checkpoint_dir = os.path.join(project_root, \"checkpoints\")"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "LLM init decision (ACESTEP_INIT_LLM) and what disabling costs",
+    "claim": "LLM initialization at model-init time: ACESTEP_INIT_LLM empty/'auto' -> use gpu_config.init_lm_default (true for tier3+ i.e. >6GB; true on a 32GB Mac); 'true/1/yes/y/on' -> force enable; anything else -> force disable. LM model selection: ACESTEP_LM_MODEL_PATH if set, else tier-recommended (1.7B on tier5/6a/6b, 4B on unlimited), with size-class support validation and fallback. Backend resolved via resolve_lm_backend (on MPS vllm is rewritten to mlx/pt). When disabled, app.state._llm_lazy_load_disabled=true and the .env documents the lost features: thinking mode, CoT caption/language detection, sample mode (/create_random_sample), format mode (/format_input). LM device/offload overridable via ACESTEP_LM_DEVICE and ACESTEP_LM_OFFLOAD_TO_CPU.",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "29-48, 74-77, 101-106",
+      "quote": "init_llm_env = os.getenv(\"ACESTEP_INIT_LLM\", \"\").strip().lower(); init_llm = gpu_config.init_lm_default ... elif init_llm_env in {\"1\", \"true\", \"yes\", \"y\", \"on\"} ... lm_backend = resolve_lm_backend(os.getenv(\"ACESTEP_LM_BACKEND\"), gpu_config); lm_device = os.getenv(\"ACESTEP_LM_DEVICE\", device) ... app.state._llm_lazy_load_disabled = True"
+     },
+     {
+      "file": ".env.example",
+      "lines": "44-51",
+      "quote": "When LLM is disabled, these features are unavailable: - Thinking mode (thinking=true) - Chain-of-Thought caption/language detection - Sample mode (generate from description) - Format mode (LLM-enhanced input)"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "On-demand model switching via API (relevant for the TS client)",
+    "claim": "POST /v1/init {model?, slot? (1-3), init_llm?, lm_model_path?} initializes or switches DiT/LM models at runtime, downloading missing checkpoints, and runs in a thread executor under app.state._init_lock (server stays responsive \u2014 unlike the lazy first-request path). Slots 2/3 only exist if ACESTEP_CONFIG_PATH2/ACESTEP_CONFIG_PATH3 were set at startup. POST /v1/reinitialize also exists for reloading with new settings. This is the recommended pre-warm call for the Next.js app after server start: POST /v1/init with empty body initializes defaults, then poll /health for models_initialized=true.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "17-31, 191-231",
+      "quote": "class InitModelRequest ... slot ... \"Slots 2 and 3 require ACESTEP_CONFIG_PATH2 / ACESTEP_CONFIG_PATH3 to have been set at startup\" ... @app.post(\"/v1/init\") ... async with app.state._init_lock: ... await loop.run_in_executor(app.state.executor, lambda: initialize_models_for_request(...))"
+     },
+     {
+      "file": "acestep/api/http/reinitialize_route.py",
+      "lines": "25",
+      "quote": "@app.post(\"/v1/reinitialize\")"
+     }
+    ],
+    "confidence": "high"
+   }
+  ],
+  "open_questions": [
+   "Exact on-disk download size of ACE-Step/Ace-Step1.5: the repo's own docs say ~10 GB (docs/en/INSTALL.md:33) and bf16 weight constants sum to ~9.6 GB, but actual HF repo file sizes (incl. tokenizer/config extras) were not verified network-side per the read-only/no-network constraint.",
+   "What torch.mps.recommended_max_memory() reports on this specific 32 GB M2 Max (determines tier6b vs unlimited and therefore auto-picked LM 1.7B vs 4B) \u2014 verify at M0 runtime with MAX_MPS_VRAM unset; pinning ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-1.7B sidesteps it.",
+   "Whether the checkpoint config.json shipped in HF repo acestep-v15-sft sets is_turbo=false (expected): if so, GET /v1/models will report extract/lego/complete for sft models even though README/UI say sft does not support them \u2014 the TS client should encode the stricter pure-base rule rather than trusting supported_task_types.",
+   "The pinned v0.1.8 tag could not be confirmed via git metadata in this session (pyproject version reads 1.5.0; .git exists but no git commands were run beyond file inspection)."
+  ]
+ },
+ "verdicts": {
+  "verdicts": [
+   {
+    "claim": "(a) Model registry: unified main repo ACE-Step/Ace-Step1.5 with 4 components; sub-repos for LMs 0.6B/4B, DiT variants, XL 4B DiTs; one community VAE scragvae",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/model_downloader.py",
+      "lines": "287-323",
+      "quote": "MAIN_MODEL_REPO = \"ACE-Step/Ace-Step1.5\" ... SUBMODEL_REGISTRY ... MAIN_MODEL_COMPONENTS = [\"acestep-v15-turbo\", \"vae\", \"Qwen3-Embedding-0.6B\", \"acestep-5Hz-lm-1.7B\"] ... VAE_REGISTRY: Dict[str, str] = {\"scragvae\": \"scragnog/Ace-Step-1.5-ScragVAE\"}"
+     },
+     {
+      "file": "acestep/api/model_download.py",
+      "lines": "8-20",
+      "quote": "MODEL_REPO_MAPPING = {\"acestep-v15-turbo\": \"ACE-Step/Ace-Step1.5\", ...} DEFAULT_REPO_ID = \"ACE-Step/Ace-Step1.5\""
+     }
+    ]
+   },
+   {
+    "claim": "(a) Default DiT is acestep-v15-turbo; bf16 weight sizes from MODEL_VRAM/LM_VRAM (2B DiT 4.7, XL 9.0, VAE 0.33, TE 1.2, LM 1.2/3.4/8.0 GB); docs say ~10GB disk",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "113",
+      "quote": "app.state._config_path = os.getenv(\"ACESTEP_CONFIG_PATH\", \"acestep-v15-turbo\")"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "148-164",
+      "quote": "MODEL_VRAM = {\"dit_turbo\": 4.7, ... \"dit_xl_turbo\": 9.0, ... \"vae\": 0.33, \"text_encoder\": 1.2, ...}; LM_VRAM = {\"0.6B\": {\"weights\": 1.2,...}, \"1.7B\": {\"weights\": 3.4,...}, \"4B\": {\"weights\": 8.0,...}}"
+     },
+     {
+      "file": "acestep/core/generation/handler/init_service_orchestrator.py",
+      "lines": "68-72",
+      "quote": "if config_path is None: config_path = \"acestep-v15-turbo\""
+     },
+     {
+      "file": "docs/en/INSTALL.md",
+      "lines": "33",
+      "quote": "| Disk | ~10GB for core models |"
+     }
+    ]
+   },
+   {
+    "claim": "(a) Capability matrix: API gates supported_task_types ONLY by config.json is_turbo (4 vs 7 tasks); Gradio UI/README gate Extract/Lego/Complete to pure base models only, so API may over-report for sft",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/constants.py",
+      "lines": "82-89",
+      "quote": "TASK_TYPES_TURBO = [\"text2music\", \"repaint\", \"cover\", \"cover-nofsq\"] ... TASK_TYPES_BASE = [\"text2music\", \"repaint\", \"cover\", \"cover-nofsq\", \"extract\", \"lego\", \"complete\"]"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "33-46",
+      "quote": "is_turbo = config.get(\"is_turbo\", False); if is_turbo: return list(TASK_TYPES_TURBO); return list(TASK_TYPES_BASE)  # missing/unreadable config.json also returns TASK_TYPES_BASE"
+     },
+     {
+      "file": "acestep/ui/gradio/events/generation/model_config.py",
+      "lines": "29-42,107-112",
+      "quote": "is_pure_base_model: path contains \"base\" and excludes \"sft\" and \"turbo\" ... if is_pure_base: task_choices = TASK_TYPES_BASE else: task_choices = TASK_TYPES_TURBO"
+     },
+     {
+      "file": "README.md",
+      "lines": "258-272",
+      "quote": "acestep-v15-base ... Extract \u2705 Lego \u2705 Complete \u2705 | acestep-v15-sft ... \u274c \u274c \u274c | acestep-v15-turbo ... \u274c \u274c \u274c (same for xl variants)"
+     }
+    ]
+   },
+   {
+    "claim": "(b) Nothing downloads at startup by default (ACESTEP_NO_INIT defaults true \u2192 lazy); init snapshots the unified repo into <repo_root>/checkpoints; source via ACESTEP_DOWNLOAD_SOURCE or Google-reachability probe with cross-fallback",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "185,219-223",
+      "quote": "no_init = env_bool(\"ACESTEP_NO_INIT\", True) ... if no_init: print(\"[API Server] Models will be lazy-loaded on first request\") ... return"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "64-77",
+      "quote": "checkpoint_dir = os.path.join(project_root, \"checkpoints\") ... ensure_model_downloaded(dit_model_name, checkpoint_dir) ... ensure_model_downloaded(\"vae\", checkpoint_dir)"
+     },
+     {
+      "file": "acestep/api/model_download.py",
+      "lines": "23-36,107-133",
+      "quote": "sock.connect((\"www.google.com\", 443)) ... prefer_source = os.environ.get(\"ACESTEP_DOWNLOAD_SOURCE\", \"\").lower() ... use_huggingface = can_access_google() ... Falling back to ModelScope... / Trying HuggingFace as fallback..."
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "100-102",
+      "quote": "def _get_project_root() -> str: current_file = os.path.abspath(__file__); return os.path.dirname(os.path.dirname(current_file))"
+     }
+    ]
+   },
+   {
+    "claim": "(b) No download-progress endpoint; only /query_result progress_text (global last log line via loguru sink + stderr proxy); lazy init runs synchronously on the event loop blocking /health, while POST /v1/init runs in a thread executor",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/job_runtime_state.py",
+      "lines": "45-61",
+      "quote": "print(\"[API Server] First request received \u2014 lazy-loading models...\") ... do_model_initialization(app=_AppProxy(app_state), **init_kwargs)  # direct synchronous call inside async ensure_models_initialized"
+     },
+     {
+      "file": "acestep/api/job_execution_runtime.py",
+      "lines": "50,77",
+      "quote": "await ensure_models_initialized_fn(app_state) ... result = await loop.run_in_executor(executor, _blocking_generate)  # only generation is offloaded; init is not"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "183-184",
+      "quote": "log_buffer, _stderr_proxy = install_log_capture(logger, sys.stderr); sys.stderr = _stderr_proxy"
+     },
+     {
+      "file": "acestep/api/http/query_result_service.py",
+      "lines": "55-60,133",
+      "quote": "\"progress_text\": get_log_last_message() ... current_log = get_log_last_message() if status_int == 0 else record.progress_text  # STATUS_MAP: queued/running -> 0"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "191-212",
+      "quote": "@app.post(\"/v1/init\") ... async with app.state._init_lock: ... await loop.run_in_executor(app.state.executor, lambda: initialize_models_for_request(...))"
+     }
+    ]
+   },
+   {
+    "claim": "(c) /health (no auth) always status=ok with models_initialized/llm_initialized/loaded_model/loaded_lm_model; no 'downloading' state; init failure visible only via failed jobs; eager mode (ACESTEP_NO_INIT=false) loads in lifespan and RuntimeError kills startup; /v1/models is key-protected per-model inventory",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "146-161",
+      "quote": "@app.get(\"/health\") ... return wrap_response({\"status\": \"ok\", \"service\": \"ACE-Step API\", \"version\": \"1.0\", \"models_initialized\": bool(getattr(app.state, \"_initialized\", False)), ...})"
+     },
+     {
+      "file": "acestep/api/job_runtime_state.py",
+      "lines": "26-31",
+      "quote": "if getattr(app_state, \"_initialized\", False): return ... if getattr(app_state, \"_init_error\", None): raise RuntimeError(app_state._init_error)"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "89-93",
+      "quote": "if not ok: app.state._init_error = status_msg ... raise RuntimeError(status_msg); app.state._initialized = True"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "102-110,179-183",
+      "quote": "models = [{\"name\": name, \"is_default\": ..., \"is_loaded\": name in loaded_dit_models, \"supported_task_types\": ...}] ... @app.get(\"/v1/models\") async def list_models(_: None = Depends(verify_api_key))"
+     }
+    ],
+    "correction": "All verified. One semantics caveat worth knowing (listed in missed facts): /health's loaded_model is inventory default_model \u2014 the basename of ACESTEP_CONFIG_PATH \u2014 and is populated even when models_initialized=false, i.e. it names the configured model, not a loaded one."
+   },
+   {
+    "claim": "(d) acestep-download = acestep.model_downloader:main; bare run downloads main repo to cwd-based ./checkpoints; flags --model/-m, --all/-a, --list/-l, --dir/-d, --force/-f, --token/-t, --skip-main; weights-file existence check; huggingface-cli equivalent in epilog",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "pyproject.toml",
+      "lines": "96-100",
+      "quote": "[project.scripts] ... acestep-download = \"acestep.model_downloader:main\""
+     },
+     {
+      "file": "acestep/model_downloader.py",
+      "lines": "864-927",
+      "quote": "acestep-download  # Download main model (includes LM 1.7B) ... huggingface-cli download ACE-Step/Ace-Step1.5 --local-dir ./checkpoints ... --model/-m --all/-a --list/-l --dir/-d --force/-f --token/-t --skip-main"
+     },
+     {
+      "file": "acestep/model_downloader.py",
+      "lines": "329-383,949-973",
+      "quote": "env_root = os.environ.get(\"ACESTEP_PROJECT_ROOT\") ... return Path(os.getcwd()) ... weight_filenames = (\"model.safetensors\", ... \"diffusion_pytorch_model.safetensors\", ...) ... if args.model == \"main\" ... elif args.model in SUBMODEL_REGISTRY: if not args.skip_main and not check_main_model_exists(...)"
+     }
+    ]
+   },
+   {
+    "claim": "(e) 32GB M2 Max: MPS memory via recommended_max_memory()/0.75 fallback \u2192 ~24GB tier6b; MPS overrides force mlx backend, no quantization, no torch.compile, no offload; float32 dtype on MPS; auto-offload heuristic uses <20GB threshold and ACESTEP_OFFLOAD_TO_CPU overrides it",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "589-628",
+      "quote": "mps_module.recommended_max_memory() ... (fallbacks: get_device_properties(0).total_memory, then sysctl hw.memsize * 0.75, then conservative 8.0)"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "36,764-776",
+      "quote": "VRAM_AUTO_OFFLOAD_THRESHOLD_GB = 20.0 ... elif gpu_memory_gb <= 24: return \"tier6b\" else: return \"unlimited\""
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "843-890",
+      "quote": "_mps = is_mps_platform() ... lm_backend_restriction=\"pt_mlx_only\" if _mps ... recommended_backend=\"mlx\" if _mps ... offload_to_cpu_default=False if _mps ... quantization_default=False if _mps ... compile_model_default=False if _mps ... mlx_vae_chunk_size=_auto_mlx_vae_chunk_size(gpu_memory_gb) if _mps else 512"
+     },
+     {
+      "file": "acestep/core/generation/handler/init_service_orchestrator.py",
+      "lines": "100-101",
+      "quote": "else: self.dtype = torch.bfloat16 if resolved_device == \"xpu\" else torch.float32"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "38,53-59",
+      "quote": "auto_offload = gpu_memory_gb > 0 and gpu_memory_gb < VRAM_AUTO_OFFLOAD_THRESHOLD_GB ... offload_to_cpu_env = os.getenv(\"ACESTEP_OFFLOAD_TO_CPU\") ... else: offload_to_cpu = auto_offload"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "428-448",
+      "quote": "\"tier6b\": { # 20-24GB ... max_duration 480/480, max_batch 8/8, recommended_lm_model \"acestep-5Hz-lm-1.7B\", offload_to_cpu_default False, quantization_default False"
+     }
+    ]
+   },
+   {
+    "claim": "(e) MLX path: MLX DiT (use_mlx_dit=True default on mps/cpu, silent PyTorch fallback), MLX VAE (chunk auto-tune 256/512/1024/2048 min 192, ACESTEP_MLX_VAE_CHUNK, ACESTEP_MLX_VAE_FP16), MLX LM via mlx_lm.load with 'model.' prefix remap, vllm-on-mps auto-redirect, wav CPU-offload when MPS mem <32GB",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/core/generation/handler/init_service_setup.py",
+      "lines": "114-141",
+      "quote": "if use_mlx_dit and device in (\"mps\", \"cpu\"): mlx_ok = self._init_mlx_dit(...) ... if device in (\"mps\", \"cpu\"): mlx_vae_ok = self._init_mlx_vae()"
+     },
+     {
+      "file": "acestep/core/generation/handler/init_service_orchestrator.py",
+      "lines": "59",
+      "quote": "use_mlx_dit: bool = True"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "779-810",
+      "quote": "env_val = os.environ.get(\"ACESTEP_MLX_VAE_CHUNK\") ... if mem_gb <= 16: size = 256 elif mem_gb <= 36: size = 512 elif mem_gb <= 64: size = 1024 else: size = 2048; return max(192, size)"
+     },
+     {
+      "file": "acestep/core/generation/handler/mlx_vae_init.py",
+      "lines": "48-53",
+      "quote": "use_fp16 = os.environ.get(\"ACESTEP_MLX_VAE_FP16\", \"0\").lower() in (\"1\", \"true\", \"yes\")"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "678-694,2945-2994",
+      "quote": "if backend == \"mlx\" or (backend == \"vllm\" and device == \"mps\"): ... self._load_mlx_model(...) ... from mlx_lm.utils import load as mlx_load ... weights = {f\"model.{k}\": v for k, v in weights.items()}"
+     },
+     {
+      "file": "acestep/core/generation/handler/memory_utils.py",
+      "lines": "118-127",
+      "quote": "override = os.environ.get(\"ACESTEP_MPS_DECODE_OFFLOAD\") ... if self.device == \"mps\": ... if mem_gb is not None and mem_gb >= 32: return False; return True"
+     }
+    ]
+   },
+   {
+    "claim": "(f) .env.example exact variable list (5 active + 8 commented) with stated defaults; .env loaded once with override=False; PORT/SERVER_NAME/LANGUAGE/ACESTEP_BATCH_SIZE are Gradio-launcher-only",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": ".env.example",
+      "lines": "14-84",
+      "quote": "ACESTEP_CONFIG_PATH=acestep-v15-turbo ... ACESTEP_LM_MODEL_PATH=acestep-5Hz-lm-1.7B ... ACESTEP_DEVICE=auto ... ACESTEP_LM_BACKEND=vllm ... ACESTEP_INIT_LLM=auto ... # ACESTEP_CHECKPOINTS_DIR= ... # ACESTEP_DOWNLOAD_SOURCE=auto ... # ACESTEP_API_KEY=sk-your-secret-key ... # PORT=7860 ... # SERVER_NAME=127.0.0.1 ... # LANGUAGE=en ... # ACESTEP_BATCH_SIZE=2 ... # ACESTEP_NO_INIT=true"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "164-180",
+      "quote": "_load_project_env ... load_dotenv(env_path, override=False)"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "41",
+      "quote": "VALID_LM_BACKENDS = {\"vllm\", \"pt\", \"mlx\"}"
+     }
+    ],
+    "correction": "Confirmed; ACESTEP_BATCH_SIZE appears only in Gradio launcher scripts (start_gradio_ui*.sh/.bat) \u2014 no API-server Python code reads PORT/SERVER_NAME/LANGUAGE/ACESTEP_BATCH_SIZE."
+   },
+   {
+    "claim": "(f) api_server CLI: exactly 7 flags with stated defaults; uvicorn workers=1 reload=False; eager loading requires ACESTEP_NO_INIT=false env (no --init flag); env-only tunables QUEUE_MAXSIZE=200, QUEUE_WORKERS=1, AVG_JOB_SECONDS=5.0, AVG_WINDOW=50, API_WORKERS=1, TMPDIR, CONFIG_PATH2/3, USE_FLASH_ATTENTION=true, OFFLOAD_*/COMPILE_MODEL=false, VAE_CHECKPOINT, GENERATION_TIMEOUT=600",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/server_cli.py",
+      "lines": "23-96",
+      "quote": "--host default os.getenv(\"ACESTEP_API_HOST\", \"127.0.0.1\") ... --port int default ACESTEP_API_PORT or 8001 ... --api-key ... --download-source choices [huggingface, modelscope, auto] ... --init-llm store_true default env_bool(\"ACESTEP_INIT_LLM\", False) ... --lm-model-path ... --no-init store_true default env_bool(\"ACESTEP_NO_INIT\", False) ... uvicorn.run(\"acestep.api_server:app\", ..., reload=False, workers=1)"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "194-198",
+      "quote": "QUEUE_MAXSIZE = int(os.getenv(\"ACESTEP_QUEUE_MAXSIZE\", \"200\")); WORKER_COUNT = int(os.getenv(\"ACESTEP_QUEUE_WORKERS\", \"1\")); INITIAL_AVG_JOB_SECONDS = float(os.getenv(\"ACESTEP_AVG_JOB_SECONDS\", \"5.0\")); AVG_WINDOW = int(os.getenv(\"ACESTEP_AVG_WINDOW\", \"50\"))"
+     },
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "61,100-101,117",
+      "quote": "tmp_root = (os.getenv(\"ACESTEP_TMPDIR\") ...) ... config_path2 = os.getenv(\"ACESTEP_CONFIG_PATH2\", \"\").strip() ... max_workers = int(os.getenv(\"ACESTEP_API_WORKERS\", \"1\"))"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music_execute.py",
+      "lines": "11-12",
+      "quote": "_DEFAULT_GENERATION_TIMEOUT = int(os.environ.get(\"ACESTEP_GENERATION_TIMEOUT\", \"600\"))"
+     },
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "51,61-62",
+      "quote": "use_flash_attention = env_bool(\"ACESTEP_USE_FLASH_ATTENTION\", True) ... offload_dit_to_cpu = env_bool(\"ACESTEP_OFFLOAD_DIT_TO_CPU\", False); compile_model = env_bool(\"ACESTEP_COMPILE_MODEL\", False)"
+     }
+    ]
+   },
+   {
+    "claim": "(g) Update check is shell-only; start_api_server_macos.sh hardcodes CHECK_UPDATE=\"true\" (line 43), fetches with 10s timeout, prompts interactively when remote differs; check_update.sh does git reset --hard; gradio macos launcher uses env-overridable := default; bypass by running acestep-api directly; on a detached-HEAD tag checkout the prompt is likely to trigger",
+    "verdict": "partially_correct",
+    "evidence": [
+     {
+      "file": "start_api_server_macos.sh",
+      "lines": "42-44,69-131",
+      "quote": "CHECK_UPDATE=\"true\" ... gtimeout 10 git fetch origin --quiet ... remote_commit=\"$(git rev-parse --short \"origin/$branch\" 2>/dev/null || echo \"\")\"; if [[ -z \"$remote_commit\" || \"$commit\" == \"$remote_commit\" ]]; then echo \"[Update] Already up to date\" ... return 0 ... read -rp \"Update now before starting? (Y/N): \""
+     },
+     {
+      "file": "check_update.sh",
+      "lines": "147,278",
+      "quote": "read -rp \"Do you want to update now? (Y/N): \" UPDATE_CHOICE ... if \"$GIT_PATH\" reset --hard \"origin/$CURRENT_BRANCH\" &>/dev/null; then"
+     },
+     {
+      "file": "start_gradio_ui_macos.sh",
+      "lines": "141",
+      "quote": ": \"${CHECK_UPDATE:=true}\""
+     },
+     {
+      "file": ".git/config",
+      "lines": "8-10",
+      "quote": "[remote \"origin\"] url = https://github.com/ace-step/ACE-Step-1.5; fetch = +refs/tags/v0.1.8:refs/tags/v0.1.8"
+     },
+     {
+      "file": ".git/HEAD",
+      "lines": "1",
+      "quote": "dce621408bee8c31b4fcf4811682eb9359e1bc94  (== refs/tags/v0.1.8 in .git/packed-refs \u2014 detached HEAD pinned at the tag)"
+     }
+    ],
+    "correction": "All mechanics confirmed, but the final prediction is wrong for THIS clone: .git/config restricts the fetch refspec to the v0.1.8 tag only, so `git fetch origin` creates no origin/* branch refs; `git rev-parse origin/HEAD` fails, remote_commit is empty, and _startup_update_check takes the 'Already up to date' early-return (start_api_server_macos.sh:98-104) \u2014 the interactive prompt will NOT trigger. The reset --hard danger only applies to a normally-cloned repo. Bypassing the launcher remains good practice (it also skips the embedded-Python/MLX pip-fix logic at lines 143-195), and the pin v0.1.8 IS verifiable from .git metadata, resolving the analyst's open question."
+   },
+   {
+    "claim": "Gotcha: ACESTEP_CHECKPOINTS_DIR is honored by handler.initialize_service and the CLI but ignored by the API server's pre-download and inventory scan, risking double downloads and inventory mismatches",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_model_init.py",
+      "lines": "64-70",
+      "quote": "checkpoint_dir = os.path.join(project_root, \"checkpoints\") ... ensure_model_downloaded(dit_model_name, checkpoint_dir)"
+     },
+     {
+      "file": "acestep/core/generation/handler/init_service_orchestrator.py",
+      "lines": "122-128",
+      "quote": "env_ckpt = os.environ.get(\"ACESTEP_CHECKPOINTS_DIR\"); if env_ckpt: checkpoint_dir = str(get_checkpoints_dir()) elif project_root: checkpoint_dir = os.path.join(project_root, \"checkpoints\")"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "60-61",
+      "quote": "project_root = get_project_root(); checkpoint_dir = os.path.join(project_root, \"checkpoints\")"
+     },
+     {
+      "file": "acestep/api/http/model_init_service.py",
+      "lines": "92-93",
+      "quote": "project_root = get_project_root(); checkpoint_dir = os.path.join(project_root, \"checkpoints\")  # POST /v1/init also hardcodes repo_root/checkpoints"
+     }
+    ]
+   },
+   {
+    "claim": "LLM init decision: ACESTEP_INIT_LLM auto\u2192tier default (true >6GB tiers / 32GB Mac), truthy set forces on, anything else forces off; LM selection env\u2192tier-recommended with size-class validation; backend via resolve_lm_backend; disabling sets _llm_lazy_load_disabled and loses thinking/CoT/sample/format; ACESTEP_LM_DEVICE / ACESTEP_LM_OFFLOAD_TO_CPU overrides",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/startup_llm_init.py",
+      "lines": "29-48,56-77,101-106",
+      "quote": "init_llm_env = os.getenv(\"ACESTEP_INIT_LLM\", \"\").strip().lower(); init_llm = gpu_config.init_lm_default ... elif init_llm_env in {\"1\", \"true\", \"yes\", \"y\", \"on\"} ... else: ... init_llm = False ... recommended_lm = get_recommended_lm_model(gpu_config) ... is_supported, warning_msg = is_lm_model_supported(...) ... lm_backend = resolve_lm_backend(os.getenv(\"ACESTEP_LM_BACKEND\"), gpu_config); lm_device = os.getenv(\"ACESTEP_LM_DEVICE\", device) ... app.state._llm_lazy_load_disabled = True"
+     },
+     {
+      "file": ".env.example",
+      "lines": "44-48",
+      "quote": "When LLM is disabled, these features are unavailable: - Thinking mode (thinking=true) - Chain-of-Thought caption/language detection - Sample mode ... - Format mode ..."
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "354-362,435",
+      "quote": "tier3 (6-8GB): \"init_lm_default\": True ... tier6b: \"init_lm_default\": True"
+     }
+    ]
+   },
+   {
+    "claim": "POST /v1/init {model?, slot? 1-3, init_llm?, lm_model_path?} switches models at runtime in a thread executor under _init_lock; slots 2/3 need ACESTEP_CONFIG_PATH2/3; /v1/reinitialize exists; recommended pre-warm: empty-body /v1/init then poll /health",
+    "verdict": "partially_correct",
+    "evidence": [
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "17-31,191-212",
+      "quote": "class InitModelRequest ... init_llm: bool = Field(default=False, ...) ... slot ge=1 le=3 ... async with app.state._init_lock: ... run_in_executor(app.state.executor, ...)"
+     },
+     {
+      "file": "acestep/api/http/model_init_service.py",
+      "lines": "96,129-136",
+      "quote": "target_model = (model_name or get_model_name(current_config)).strip() ... if init_llm: lm_model_path = (requested_lm_model_path or os.getenv(\"ACESTEP_LM_MODEL_PATH\", \"acestep-5Hz-lm-0.6B\")).strip() ... os.environ[\"ACESTEP_INIT_LLM\"] = \"true\"; os.environ[\"ACESTEP_LM_MODEL_PATH\"] = lm_model_path"
+     },
+     {
+      "file": "acestep/api/http/reinitialize_route.py",
+      "lines": "25",
+      "quote": "@app.post(\"/v1/reinitialize\")"
+     }
+    ],
+    "correction": "Mechanics confirmed, but the pre-warm recommendation needs a caveat: init_llm defaults to False, so an empty-body /v1/init initializes ONLY the DiT/VAE/text-encoder \u2014 the LM stays unloaded (llm_initialized=false) and, because /v1/init sets _initialized=True, the startup path that would auto-select the tier-recommended LM is skipped; the LM then loads lazily on the first generation request needing it (acestep/api/llm_readiness.py) with default acestep-5Hz-lm-0.6B \u2014 NOT 1.7B \u2014 unless ACESTEP_LM_MODEL_PATH is set or the request passes lm_model_path. To pre-warm fully on the Mac: POST /v1/init {\"init_llm\": true, \"lm_model_path\": \"acestep-5Hz-lm-1.7B\"} (note this also mutates process env at model_init_service.py:135-136)."
+   }
+  ],
+  "missed": [
+   "Pin verification was possible without running git: .git/HEAD contains dce621408bee8c31b4fcf4811682eb9359e1bc94 which equals refs/tags/v0.1.8 in .git/packed-refs, and .git/config's fetch refspec is tag-only (+refs/tags/v0.1.8:refs/tags/v0.1.8). This both confirms the v0.1.8 pin (analyst open question 4) and neutralizes the launcher update-check prompt risk for this clone.",
+   "CORS policy matters for the Next.js app: route_setup.py:62-68 restricts browser origins to 'null', http://localhost, http://127.0.0.1 plus regex ^https?://(localhost|127.0.0.1)(:port)?$, methods GET/POST/OPTIONS, headers Content-Type/Authorization. Browser-side fetches from any non-localhost origin will fail CORS \u2014 call the engine from the Next.js server side (route handlers), which is unaffected.",
+   "The API server lifespan DELETES proxy env vars (http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY/ALL_PROXY) at startup (acestep/api/lifespan_runtime.py:56-57), so model downloads from inside the API server ignore any system proxy; users behind proxies must pre-download via the CLI.",
+   "/health's loaded_model is misleading: it is inventory default_model = basename(ACESTEP_CONFIG_PATH) (model_service_routes.py:64,105,121,158) and is non-null even before any model loads. A TS client must key readiness ONLY on models_initialized (and llm_initialized for LM features).",
+   "There IS per-request LLM lazy loading: ensure_llm_ready_for_request (acestep/api/llm_readiness.py:9-88, invoked from job_blocking_generation.py:82) initializes the LM on demand during generation unless _llm_lazy_load_disabled or a prior _llm_init_error; once an error/block is recorded it is never retried (llm_readiness.py:36), and CoT features are silently auto-disabled for those requests. Its defaults differ from startup: lm default acestep-5Hz-lm-0.6B and backend default 'vllm' without resolve_lm_backend (lines 62-66) \u2014 on MPS this still lands on MLX only because llm_inference.py:678 redirects vllm+mps to MLX.",
+   "The API server's MODEL_REPO_MAPPING (acestep/api/model_download.py:8-18) omits acestep-v15-turbo-shift1, acestep-v15-turbo-continuous, and all three XL models; unknown names fall back to the unified repo. Downloads for those DiTs still work because handler.initialize_service runs its own _ensure_models_present \u2192 model_downloader.ensure_dit_model with the full SUBMODEL_REGISTRY (acestep/core/generation/handler/init_service_downloads.py:31-48); the handler path also auto-downloads the main model and non-official VAE variants.",
+   "Two different 'already downloaded' checks: the API-server pre-download treats any non-empty directory as present (api/model_download.py:100 os.path.exists + os.listdir), while the CLI/handler require an actual weights file (_contains_model_weights, model_downloader.py:362-383). A partially-downloaded folder can fool the API-level check.",
+   "Misleading startup log: do_model_initialization prints 'Auto-enabling CPU offload (GPU < 16GB)' / 'disabled by default (GPU >= 16GB)' (startup_model_init.py:41-44) but the real threshold constant is VRAM_AUTO_OFFLOAD_THRESHOLD_GB = 20.0 (gpu_config.py:36) \u2014 don't trust the log text when documenting behavior.",
+   "progress_text is a single GLOBAL last-log-line buffer for the whole process (one LogBuffer installed at module import, api_server.py:183-184); with concurrent jobs the progress_text returned for one task_id can be a log line from another job. STATUS_MAP maps queued and running both to 0 (server_utils.py:10), succeeded=1, failed=2 (unknown statuses also map to 2).",
+   "Full REST surface also includes POST /v1/create_sample (sample_format_routes.py:162) alongside /create_random_sample and /format_input; note /release_task, /query_result, /create_random_sample and /format_input authenticate via verify_token_from_request (token in request) rather than the Depends(verify_api_key) header dependency used by /v1/* routes \u2014 the TS client should send auth in the form each route expects.",
+   "Per-generation watchdog: ACESTEP_GENERATION_TIMEOUT defaults to 600s (acestep/core/generation/handler/generate_music_execute.py:11-12; same default in openrouter_adapter.py:46) \u2014 long renders on MPS may need this raised, and the TS client's polling budget should exceed it.",
+   "MPS memory detection has two more fallbacks the analyst skipped: torch.mps.get_device_properties(0).total_memory before the sysctl*0.75 path, and a final conservative 8.0 GB constant if all detection fails (gpu_config.py:598-628); MAX_MPS_VRAM env can simulate/override for testing (gpu_config.py:25,537-548).",
+   "ACESTEP_SAVE_MEMORY=1 enables save_memory_mode (skip intermediate tensors, disable auto_lrc/auto_score) (gpu_config.py:27,260-263) \u2014 a useful knob on a 32GB unified-memory Mac.",
+   "Job-store retention parameters relevant to the client: completed jobs are cleaned after 24h (JOB_STORE_MAX_AGE_SECONDS=86400, cleanup every 300s) and cached results expire after 7 days; an unknown/expired task_id in /query_result returns {result: \"[]\", status: 0} \u2014 indistinguishable from 'queued' (api_server.py:109-113; query_result_service.py:195), so the TS client should treat persistent status-0 with empty result as a possible expiry."
+  ]
+ }
+}

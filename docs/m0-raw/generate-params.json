@@ -1,0 +1,1459 @@
+{
+ "key": "generate-params",
+ "mapped": {
+  "summary": "ACE-Step 1.5's REST surface for generation is POST /release_task (async job; JSON, multipart/form-data, or x-www-form-urlencoded) polled via POST /query_result, with audio downloaded via GET /v1/audio?path=... The request schema is GenerateMusicRequest (acestep/api/http/release_task_models.py) with extensive camelCase/snake_case aliases and nested param_obj/metas fallback (release_task_param_parser.py). Flow: route -> RequestParser -> GenerateMusicRequest -> job queue -> run_blocking_generate -> build_generation_setup (GenerationParams/GenerationConfig in acestep/inference.py) -> generate_music() -> AceStepHandler.generate_music() (acestep/core/generation/handler/*). Key ground truths that contradict or refine the docs: (1) batch_size has NO max-8 enforcement at the REST layer (8 is a GPU-tier/UI limit; a VRAM guard may silently reduce it); (2) reference/src audio paths must be RELATIVE or inside the system temp dir \u2014 absolute paths outside temp are rejected 400 (docs say \"requires absolute path\"); multipart upload (ref_audio/src_audio file fields) is fully supported, base64 is NOT (except via the OpenRouter /v1/chat/completions adapter); (3) seed reproducibility requires use_random_seed=false + non-negative seed (comma-separated list for batch; a single seed pins only sample 0); the seed_value reported with use_random_seed=true does NOT match the seeds actually used by the DiT; (4) several accepted fields are dead at the REST layer: use_tiled_decode, lm_repetition_penalty, constrained_decoding (forced True); (5) LRC generation and PMI quality scoring are Gradio-UI-only features \u2014 there is no REST request parameter and nothing LRC/score-related in /query_result responses; (6) audio is saved to {ACESTEP_TMPDIR|{repo}/.cache/acestep/tmp}/api_audio/{deterministic-uuid}.{ext}, default format mp3 (128k/48kHz, not overridable over REST), other formats flac/wav/wav32/opus/aac at 48kHz; (7) thinking defaults to FALSE over REST (the dataclass default True is overridden) and the LM is force-skipped for cover/cover-nofsq/repaint/extract; (8) per-request model selection only switches among up to 3 pre-configured handler slots (ACESTEP_CONFIG_PATH/2/3) and silently falls back to primary on mismatch; lm_model_path/lm_backend only take effect on the first lazy LLM init; (9) GET /v1/models is shadowed by the OpenRouter-format route registered first \u2014 use GET /v1/model_inventory for the wrapped inventory payload; (10) duration is auto (-1 sentinel) when omitted; with the LM it is clamped to [10, min(gpu_max, 600)]; without the LM the DiT falls back to 120s; cover/repaint/lego/extract lock duration to the source audio.",
+  "claims": [
+   {
+    "topic": "Endpoints",
+    "claim": "Generation endpoints on the standalone API server (acestep/api_server.py): POST /release_task (create job), POST /query_result (batch poll), POST /create_random_sample (canned example payloads, no LM), POST /format_input (LM-enhance caption/lyrics), POST /v1/create_sample (LM create-from-description), GET /health, GET /v1/stats, GET /v1/models + GET /v1/model_inventory, POST /v1/init (load/switch models), GET /v1/audio (download). An OpenRouter-compatible router also adds GET /v1/models and POST /v1/chat/completions. LoRA, reinitialize, and training routes also exist.",
+    "evidence": [
+     {
+      "file": "acestep/api_server.py",
+      "lines": "3-11",
+      "quote": "- POST /release_task          Create music generation task\n- POST /query_result          Batch query task results"
+     },
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "70-159"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "146-231"
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "30-246"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Endpoints \u2014 /v1/models shadowing",
+    "claim": "GET /v1/models is registered twice: the OpenRouter-format router is included FIRST (route_setup.py line 70-71, openrouter_adapter.py line 594), then model_service_routes registers another GET /v1/models (line 179). FastAPI matches in registration order, so GET /v1/models returns the OpenRouter ModelsResponse shape; the wrapped inventory ({models:[{name,is_default,is_loaded,supported_task_types}],default_model,lm_models,...}) is reliably available at GET /v1/model_inventory.",
+    "evidence": [
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "70-84",
+      "quote": "openrouter_router = create_openrouter_router(lambda: app.state)\n    app.include_router(openrouter_router)\n\n    register_model_service_routes("
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "594",
+      "quote": "@router.get(\"/v1/models\", response_model=ModelsResponse)"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "179-189"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Request content types",
+    "claim": "/release_task accepts application/json, multipart/form-data, application/x-www-form-urlencoded, and (fallback) raw bodies sniffed as JSON or querystring. Unsupported content types get 415. Malformed JSON gets 400. Queue full gets 429.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_request_parser.py",
+      "lines": "88-205"
+     },
+     {
+      "file": "acestep/api/http/release_task_route.py",
+      "lines": "68-74",
+      "quote": "raise HTTPException(status_code=429, detail=\"Server busy: queue is full\")"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Parameter aliasing and nesting",
+    "claim": "Every parameter can be supplied under canonical name or aliases (PARAM_ALIASES), and values are looked up in order: top-level body, then a 'param_obj' JSON object/string, then a 'metas'/'meta'/'metadata'/'user_metadata'/'userMetadata' JSON object. Key aliases: prompt|caption; sample_query|description|desc; model|model_name|dit_model; key_scale|keyscale|key; time_signature|timesignature; audio_duration|duration|target_duration; vocal_language|language; reference_audio_path|ref_audio_path; src_audio_path|ctx_audio_path; allow_lm_batch|parallel_thinking; track_classes|instruments.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_param_parser.py",
+      "lines": "9-46"
+     },
+     {
+      "file": "acestep/api/http/release_task_param_parser.py",
+      "lines": "104-141",
+      "quote": "for source in (self._raw, self._param_obj, self._metas):"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Text prompt fields",
+    "claim": "prompt (str, default \"\", alias 'caption') is the main music description; it becomes GenerationParams.caption. global_caption (str, default \"\") is a full-song context used only for SFT-stems lego tasks. sample_query (str, default \"\", aliases description/desc) triggers create_sample LM generation of caption+lyrics+metas when non-empty (or when sample_mode=true with \"NO USER INPUT\"). use_format (bool, default false, alias 'format') runs format_sample to LM-enhance the provided caption/lyrics. There is no separate tags field \u2014 style tags go in prompt/caption free text.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "19-33",
+      "quote": "prompt: str = Field(default=\"\", description=\"Text prompt describing the music (local/per-track description for lego SFT)\")\n    global_caption: str = Field(default=\"\", description=\"Global song description for SFT-stems lego tasks (full song context)\")"
+     },
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "108-187"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "154-162"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Lyrics and instrumental mode",
+    "claim": "lyrics (str, default \"\"). Instrumental is NOT a request flag at the REST layer: GenerationParams.instrumental is derived by is_instrumental(lyrics) \u2014 empty/whitespace lyrics, or lyrics exactly '[inst]' or '[instrumental]' (case-insensitive) => instrumental=True. In sample mode, instrumental is additionally inferred from the description containing 'instrumental', 'pure music'/'pure instrument', or ending in ' solo'.",
+    "evidence": [
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "135-143",
+      "quote": "return lyrics_clean in (\"[inst]\", \"[instrumental]\")"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "163",
+      "quote": "instrumental=is_instrumental(lyrics),"
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "89-97"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Duration",
+    "claim": "audio_duration (float, seconds; aliases duration/audioDuration/target_duration/targetDuration; optional, default None). None or <=0 maps to auto sentinel -1.0 (LM/model chooses). Engine range constants: DURATION_MIN=10, DURATION_MAX=600; enforced in LM constrained decoding (clamped to [10, min(gpu_max_duration_with_lm, 600)]), NOT validated at the REST layer. Without the LM and without a duration, the DiT falls back to 120.0s. For cover/cover-nofsq/repaint/lego/extract the requested duration is silently ignored and locked to the source audio length.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "48",
+      "quote": "audio_duration: Optional[float] = None"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "12-14,168",
+      "quote": "_AUTO_DURATION_SENTINEL: float = -1.0"
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "58-59",
+      "quote": "DURATION_MIN = 10\nDURATION_MAX = 600"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "267-278"
+     },
+     {
+      "file": "acestep/core/generation/handler/padding_utils.py",
+      "lines": "75-88",
+      "quote": "fallback_duration = 120.0"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "816-820",
+      "quote": "if params.task_type in (\"cover\", \"cover-nofsq\", \"repaint\", \"lego\", \"extract\"):\n            audio_duration = None"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "BPM",
+    "claim": "bpm (Optional[int], default None = auto/LM-estimated). Engine constants BPM_MIN=30, BPM_MAX=300 are enforced only inside LM constrained decoding; the REST layer performs no range validation (any int is forwarded as metadata text '- bpm: {value}' to the DiT prompt).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "37",
+      "quote": "bpm: Optional[int] = None"
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "52-53",
+      "quote": "BPM_MIN = 30\nBPM_MAX = 300"
+     },
+     {
+      "file": "acestep/core/generation/handler/metadata_utils.py",
+      "lines": "62-79"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Key/scale",
+    "claim": "key_scale (str, default \"\", aliases keyscale/keyScale/key). Valid vocabulary is 70 combinations: note A-G + optional accidental (#, b, \u266f, \u266d) + space + 'major'|'minor' (e.g. 'C major', 'F# minor') per VALID_KEYSCALES; not validated at the REST layer \u2014 passed through as metadata string ('N/A' if empty).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "38",
+      "quote": "key_scale: str = \"\""
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "28-42",
+      "quote": "VALID_KEYSCALES.add(f\"{note}{acc} {mode}\")"
+     },
+     {
+      "file": "acestep/core/generation/handler/metadata_utils.py",
+      "lines": "72"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Time signature",
+    "claim": "time_signature (str, default \"\", aliases timesignature/timeSignature). Valid values are the strings '2','3','4','6' (meaning 2/4, 3/4, 4/4, 6/8) per VALID_TIME_SIGNATURES=[2,3,4,6]; no REST validation \u2014 any non-empty, non-'N/A' string is forwarded as metadata.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "39",
+      "quote": "time_signature: str = \"\""
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "61-66",
+      "quote": "VALID_TIME_SIGNATURES = [2, 3, 4, 6]"
+     },
+     {
+      "file": "acestep/core/generation/handler/metadata_utils.py",
+      "lines": "73-76"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Vocal language",
+    "claim": "vocal_language (str, default 'en' at the REST layer; aliases vocalLanguage/language). Valid set is the 51-entry VALID_LANGUAGES list (ar..zh + 'unknown'); not validated at the REST layer. use_cot_language=true (default) lets the LM override it.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "40",
+      "quote": "vocal_language: str = \"en\""
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "13-20"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "806-807"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Seed and reproducibility",
+    "claim": "seed: Union[int,str], default -1; use_random_seed: bool, default true. Deterministic generation requires use_random_seed=false AND seed >= 0 (int) or a comma-separated string of seeds (one per batch item; '-1' entries become random). With batch_size>1 and a single seed, only sample 0 is pinned \u2014 remaining samples get random seeds (task_utils.py prepare_seeds). Seeds are 0..2^32-1. CAVEAT: when use_random_seed=true, the API's reported seed_value comes from a prepare_seeds roll in inference.py (line 597) that is separate from the handler's internal roll actually used for noise (generate_music.py runtime prep), so the reported seed does NOT reproduce the audio; only the explicit-seed path is reproducible.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "43-44",
+      "quote": "use_random_seed: bool = True\n    seed: Union[int, str] = -1"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "70-96"
+     },
+     {
+      "file": "acestep/core/generation/handler/task_utils.py",
+      "lines": "19-63",
+      "quote": "if has_single_non_negative_seed and actual_batch_size > 1 and i > 0:\n                        actual_seed_list.append(random.randint(0, 2**32 - 1))"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "586-604,943-948"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music.py",
+      "lines": "309-321"
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "44-51"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Batch size / variations",
+    "claim": "batch_size (Optional[int]; default None -> 2). There is NO max-8 validation anywhere in the REST path; the docs' 'max 8' reflects the Gradio UI slider and GPU-tier tables (max_batch_size 1..8 by VRAM tier). The handler clamps to >=1 and a CUDA VRAM guard may silently REDUCE batch size; on MPS, cover tasks with batch>1 are executed as sequential single runs. All resulting audio paths are returned in audio_paths (first/second_audio_path are conveniences).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "49",
+      "quote": "batch_size: Optional[int] = None"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "203",
+      "quote": "batch_size = req.batch_size if req.batch_size is not None else 2"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music_request.py",
+      "lines": "70-72",
+      "quote": "actual_batch_size = max(1, actual_batch_size)\n        actual_batch_size = self._vram_guard_reduce_batch(actual_batch_size, audio_duration=audio_duration)"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "322-454"
+     },
+     {
+      "file": "acestep/api/job_generation_runtime.py",
+      "lines": "44-52"
+     },
+     {
+      "file": "docs/en/API.md",
+      "lines": "205",
+      "quote": "| `batch_size` | int | `2` | Batch generation count (max 8) |"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Model / DiT-variant selection per request",
+    "claim": "model (Optional[str]; aliases model_name/modelName/dit_model/ditModel) selects among up to 3 pre-initialized handler slots: primary (ACESTEP_CONFIG_PATH, default 'acestep-v15-turbo'), slot2 (ACESTEP_CONFIG_PATH2), slot3 (ACESTEP_CONFIG_PATH3). Matching is by exact directory basename; an unmatched name silently FALLS BACK to the primary model (logged, not errored). POST /v1/init {model, slot, init_llm, lm_model_path} can load/switch models at runtime. The selected dit_model name is echoed in the result payload.",
+    "evidence": [
+     {
+      "file": "acestep/api/job_model_selection.py",
+      "lines": "29-64",
+      "quote": "log_fn(\n            f\"[API Server] Job {job_id}: Model '{requested_model}' not found in \"\n            f\"{available_models}, using primary: {selected_model_name}\""
+     },
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "100-115",
+      "quote": "app.state._config_path = os.getenv(\"ACESTEP_CONFIG_PATH\", \"acestep-v15-turbo\")"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "17-31,191-231"
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "133-134"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Reference/source audio input over REST",
+    "claim": "Supported three ways on /release_task: (1) multipart/form-data file uploads under fields 'ref_audio' or 'reference_audio' (style reference) and 'ctx_audio' or 'src_audio' (source for cover/repaint/etc.) \u2014 saved to server temp via save_upload_to_temp; (2) JSON/form path fields reference_audio_path / src_audio_path (+ aliases) \u2014 validate_audio_path REJECTS absolute paths unless they resolve inside the system temp dir, and rejects '..' traversal (HTTP 400), so docs claiming 'requires absolute path on server' are wrong; relative paths (resolved against server CWD) or temp-dir paths are accepted; (3) NOT supported: base64 in /release_task. Base64/audio blobs ARE supported via the OpenRouter POST /v1/chat/completions message parsing. Uploaded temp files are deleted after job completion.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_request_parser.py",
+      "lines": "110-126",
+      "quote": "ref_upload = form.get(\"ref_audio\") or form.get(\"reference_audio\")\n            ctx_upload = form.get(\"ctx_audio\") or form.get(\"src_audio\")"
+     },
+     {
+      "file": "acestep/api/http/release_task_audio_paths.py",
+      "lines": "27-46",
+      "quote": "if os.path.isabs(path):\n        raise HTTPException(status_code=400, detail=\"absolute audio file paths are not allowed\")"
+     },
+     {
+      "file": "acestep/api/http/release_task_audio_paths.py",
+      "lines": "49-93"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "676-737"
+     },
+     {
+      "file": "acestep/api/job_runtime_state.py",
+      "lines": "64-78"
+     },
+     {
+      "file": "docs/en/API.md",
+      "lines": "246",
+      "quote": "**Edit/Reference Audio Parameters** (requires absolute path on server):"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Task types",
+    "claim": "task_type (str, default 'text2music'): valid set is text2music, repaint, cover, cover-nofsq, extract, lego, complete (TASK_TYPES); turbo models support only text2music/repaint/cover/cover-nofsq (TASK_TYPES_TURBO; surfaced per model via /v1/model_inventory supported_task_types). cover/cover-nofsq/repaint/lego/extract REQUIRE src_audio (else error payload) unless audio_code_string is provided. Providing audio_code_string on text2music auto-switches the task to 'cover'. Supporting fields: track_name (extract/lego), track_classes (complete; string or list, alias 'instruments'), instruction (auto-resolved from TASK_INSTRUCTIONS when empty/default).",
+    "evidence": [
+     {
+      "file": "acestep/constants.py",
+      "lines": "76-89"
+     },
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "64,117-118"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music_request.py",
+      "lines": "47-56,177-193",
+      "quote": "if task_type == \"text2music\" and self._has_non_empty_audio_codes(audio_code_string):\n            return \"cover\", TASK_INSTRUCTIONS[\"cover\"]"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "25-67"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Quality knobs over REST",
+    "claim": "inference_steps (int, default 8; clamped to >=1 in GenerationParams.__post_init__; turbo ~8, base 32-100). guidance_scale (float, default 7.0) \u2014 FORCED to 1.0 for turbo models in the handler, so it only matters on base models. use_adg (bool, default false; base only). cfg_interval_start/end (float, 0.0/1.0). shift (float, default 3.0; values <=0 reset to 1.0; only effective on base models). infer_method ('ode'|'sde', default 'ode'). timesteps (comma-separated float string, e.g. '0.97,0.76,...,0'; overrides inference_steps and shift; unparseable -> None). NOT exposed over REST despite existing in GenerationParams: sampler_mode (heun), velocity_norm_threshold/ema, dcw_* wavelet correction, retake_seed/retake_variance, flow_edit_*, latent_shift/rescale, fade_in/out, enable_normalization/normalization_db (peak-normalize to -1 dBFS always on by default).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "41-42,88-99"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "212-218",
+      "quote": "if self.inference_steps is not None and self.inference_steps < 1:\n            self.inference_steps = 1"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music.py",
+      "lines": "285-294",
+      "quote": "if self.is_turbo_model() and guidance_scale != 1.0:"
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "124-132"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "154-211"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "124-199,978-991"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Repaint/cover controls",
+    "claim": "repainting_start (float, 0.0), repainting_end (float, None; <0/None = end of source; negative repainting_start enables left-outpaint padding), repaint_mode ('conservative'|'balanced'|'aggressive', default 'balanced'), repaint_strength (float 0-1, default 0.5, pydantic-validated ge=0 le=1, balanced mode only), chunk_mask_mode ('explicit'|'auto', default 'auto'), repaint_latent_crossfade_frames (int, 10), repaint_wav_crossfade_sec (float, 0.0), audio_cover_strength (float, 1.0; ~0.2 for style transfer), cover_noise_strength (float, 0.0; 0=pure noise, 1=closest to source), audio_code_string (str, ''; user-provided 5Hz codes skip LM code generation).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "51-83"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music.py",
+      "lines": "26-48"
+     },
+     {
+      "file": "acestep/core/generation/handler/padding_utils.py",
+      "lines": "37-68"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Thinking / LM toggles per request",
+    "claim": "thinking (bool, DEFAULT FALSE at the REST layer \u2014 release_task_models.py:27 overrides the GenerationParams dataclass default of True): true = 5Hz LM generates audio codes (llm_dit), false = DiT-only. Independent of thinking, the LM still runs for CoT when use_cot_caption (default true), use_cot_language (default true), or use_cot_metas (true unless sample_mode) \u2014 it fills missing bpm/keyscale/timesignature/duration/caption/lyrics; user-provided values win. The LM is force-skipped for cover/cover-nofsq/repaint/extract tasks. sample_mode (bool, false) / sample_query auto-generate everything via create_sample. allow_lm_batch (bool, true; alias parallel_thinking). lm sampling params: lm_temperature 0.85, lm_cfg_scale 2.5 (REST default; dataclass default 2.0), lm_top_k None(0=off), lm_top_p 0.9 (>=1 disables), lm_negative_prompt 'NO USER INPUT'. constrained_decoding is accepted but IGNORED \u2014 GenerationParams.use_constrained_decoding is hardcoded True; only constrained_decoding_debug is forwarded. lm_repetition_penalty is accepted but never consumed downstream. lm_model_path / lm_backend ('vllm'|'pt'|'mlx') only take effect on the FIRST lazy LLM init (ensure_llm_ready_for_request returns early once initialized); they do not switch LM per request.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "23-33,107-125",
+      "quote": "thinking: bool = False"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "607-644,684",
+      "quote": "skip_lm_tasks = {\"cover\", \"cover-nofsq\", \"repaint\", \"extract\"}"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "197-200",
+      "quote": "use_cot_metas=not sample_mode,\n        use_cot_caption=use_cot_caption,\n        use_cot_language=use_cot_language,\n        use_constrained_decoding=True,"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "115-117",
+      "quote": "LM_DEFAULT_TEMPERATURE = 0.85\nLM_DEFAULT_CFG_SCALE = 2.5\nLM_DEFAULT_TOP_P = 0.9"
+     },
+     {
+      "file": "acestep/api/llm_readiness.py",
+      "lines": "33-37,61-66",
+      "quote": "if initialized or had_error is not None:\n            return"
+     },
+     {
+      "file": "acestep/api/http/release_task_request_builder.py",
+      "lines": "92",
+      "quote": "lm_repetition_penalty=parser.float(\"lm_repetition_penalty\", 1.0),"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Analysis-only modes",
+    "claim": "Three boolean request flags short-circuit generation: extract_codes_only (requires src_audio_path; returns {audio_codes}), full_analysis_only (encodes src audio then LM-understands it; returns bpm/keyscale/timesignature/duration/genre/prompt/lyrics/language/metas/audio_codes), analysis_only (LM CoT metadata only from caption/lyrics; returns metas, no audio). All return empty audio_paths.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "84-86"
+     },
+     {
+      "file": "acestep/api/job_analysis_runtime.py",
+      "lines": "38-114"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Output audio format",
+    "claim": "audio_format (str): REST default 'mp3' (the GenerationConfig dataclass default 'flac' is overridden by the request builder). Supported: 'flac', 'mp3', 'opus', 'aac', 'wav', 'wav32'; unsupported values fall back with a warning. Engine sample rate is 48000 Hz (handler.sample_rate). MP3 is exported via ffmpeg/libmp3lame at fixed 128k/48kHz over REST \u2014 mp3_bitrate (128k/192k/256k/320k) and mp3_sample_rate (44100/48000) exist on GenerationConfig but are NOT exposed as request fields. wav32 = 32-bit float WAV (soundfile subtype FLOAT, saved with .wav extension); flac/wav use torchaudio soundfile backend at 48kHz; opus/aac use the ffmpeg backend. use_tiled_decode is accepted in the request but never forwarded \u2014 the handler always uses its default (True).",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "101-105",
+      "quote": "audio_format: str = Field(\n        default=\"mp3\","
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "243-251,919-921,1024-1033"
+     },
+     {
+      "file": "acestep/audio_utils.py",
+      "lines": "114-131,142-178,279-304",
+      "quote": "MP3_DEFAULT_BITRATE = \"128k\"\n    MP3_ALLOWED_BITRATES = {\"128k\", \"192k\", \"256k\", \"320k\"}\n    MP3_DEFAULT_SAMPLE_RATE = 48000"
+     },
+     {
+      "file": "acestep/handler.py",
+      "lines": "121",
+      "quote": "self.sample_rate = 48000"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "204-211"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "On-disk output location",
+    "claim": "Files are written to {tmp_root}/api_audio/{uuid}.{ext} where tmp_root = $ACESTEP_TMPDIR or {repo_root}/.cache/acestep/tmp (lifespan_runtime), ext = audio_format ('wav' for wav32), and uuid is a DETERMINISTIC SHA-256-derived UUID of the full per-audio params dict (seed, prompt, lyrics, all generation params, LoRA state, format) via generate_uuid_from_params \u2014 identical params produce identical filenames. The API response maps each path to a relative download URL '/v1/audio?path={urlencoded-absolute-path}' (audio_paths, first/second_audio_path) and also returns raw_audio_paths with the raw server paths. GET /v1/audio only serves files inside temp_audio_dir (403 otherwise).",
+    "evidence": [
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "60-61,135-136",
+      "quote": "app.state.temp_audio_dir = os.path.join(tmp_root, \"api_audio\")"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "1017-1033",
+      "quote": "audio_file = os.path.join(save_dir, f\"{audio_key}.{file_ext}\")"
+     },
+     {
+      "file": "acestep/audio_utils.py",
+      "lines": "532-548"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "200-207",
+      "quote": "return f\"/v1/audio?path={encoded_path}\""
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "113-117"
+     },
+     {
+      "file": "acestep/api/http/audio_route.py",
+      "lines": "17-39"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Job lifecycle and result polling",
+    "claim": "/release_task returns wrapped {task_id, status:'queued', queue_position}. POST /query_result takes {task_id_list: [...]} (list or JSON string) and returns per task: {task_id, result: <JSON STRING of an array>, status: int (0=queued/running, 1=succeeded, 2=failed), progress_text}. Each result-array element: {file (audio URL), wave:'', status, create_time, env, prompt, lyrics, metas:{bpm,duration,genres,keyscale,timesignature,(prompt,lyrics)}, generation_info, seed_value, lm_model, dit_model, progress, stage}. Running jobs include progress (0-1) and stage. The full result on the in-memory store also carries seed_value, metas, bpm/duration/genres/keyscale/timesignature, cot_caption/cot_lyrics, lm_model, dit_model. Queue: in-memory asyncio queue (ACESTEP_QUEUE_MAXSIZE default 200, ACESTEP_QUEUE_WORKERS default 1, single uvicorn worker required); results cached 7 days; finished jobs purged after 24h; task timeout 1h.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_route.py",
+      "lines": "84-85"
+     },
+     {
+      "file": "acestep/api/http/query_result_service.py",
+      "lines": "63-139"
+     },
+     {
+      "file": "acestep/api/jobs/local_cache_updates.py",
+      "lines": "78-114"
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "113-137"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "109-113,194-198",
+      "quote": "RESULT_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 days\nTASK_TIMEOUT_SECONDS = 3600"
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "10",
+      "quote": "STATUS_MAP = {\"queued\": 0, \"running\": 0, \"succeeded\": 1, \"failed\": 2}"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "LRC generation",
+    "claim": "NOT available over REST. There is no LRC request parameter in GenerateMusicRequest and nothing LRC-related in /query_result or job result payloads. LRC generation (lyric alignment timestamps -> lrc_text) exists only as handler methods (get_lyric_timestamp in lyric_timestamp.py, get_timestamps_and_lrc in core/scoring/dit_alignment.py) invoked by the Gradio UI ('auto_lrc_time' appears only in UI generation flow). A TS client would need the Gradio UI or direct handler access to get LRC.",
+    "evidence": [
+     {
+      "file": "acestep/core/generation/handler/lyric_timestamp.py",
+      "lines": "15-146"
+     },
+     {
+      "file": "acestep/core/scoring/dit_alignment.py",
+      "lines": "375-440"
+     },
+     {
+      "file": "acestep/ui/gradio/events/results/generation_info.py",
+      "lines": "88-99"
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "113-137"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Automatic quality scoring",
+    "claim": "NOT available over REST. PMI-based quality scoring (score = log P(condition|codes) - log P(condition), with DiT-alignment fallback) is implemented in acestep/core/scoring/ (lm_score.py, dit_score.py) and is invoked only from the Gradio UI (calculate_score_handler in ui/gradio/events/results/scoring.py; auto-score timing in ui generation_progress.py). No score field exists in any API response model or payload builder.",
+    "evidence": [
+     {
+      "file": "acestep/ui/gradio/events/results/scoring.py",
+      "lines": "1-44",
+      "quote": "PMI (Pointwise Mutual Information) removes condition bias"
+     },
+     {
+      "file": "acestep/ui/gradio/events/results/generation_progress.py",
+      "lines": "229-231"
+     },
+     {
+      "file": "acestep/api/jobs/models.py",
+      "lines": "21-37"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "Auth",
+    "claim": "Optional: if ACESTEP_API_KEY env is set, /release_task and /query_result accept either body field 'ai_token' or 'Authorization: Bearer <key>' (or raw key) header; header-only endpoints (/v1/audio, /v1/models, /v1/stats, /v1/init) use verify_api_key on the Authorization header. With no ACESTEP_API_KEY, auth is disabled. All responses are wrapped as {data, code, error, timestamp, extra}.",
+    "evidence": [
+     {
+      "file": "acestep/api/http/auth.py",
+      "lines": "23-75"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "120-128,190-192"
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "OpenRouter-compatible generation surface",
+    "claim": "POST /v1/chat/completions (same FastAPI app) accepts ChatCompletionRequest: model, messages (text + audio blobs incl. base64), audio_config{format}, temperature/top_p/top_k/seed (comma-separated for batch), stream, plus ACE-specific: thinking, guidance_scale, batch_size, lyrics, sample_mode, use_format, use_cot_caption/language, task_type, repainting_start/end, audio_cover_strength, audio_codes, cover_noise_strength, inference_steps, infer_method, lm_cfg_scale, use_cot_metas; default audio format mp3; audio is returned as base64 data URLs. This is a secondary surface \u2014 the primary client target should be /release_task.",
+    "evidence": [
+     {
+      "file": "acestep/openrouter_models.py",
+      "lines": "58-113"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "43,653-760",
+      "quote": "DEFAULT_AUDIO_FORMAT = \"mp3\""
+     }
+    ],
+    "confidence": "high"
+   },
+   {
+    "topic": "acestep_v15_pipeline.py role",
+    "claim": "acestep/acestep_v15_pipeline.py is NOT the inference pipeline \u2014 it is the Gradio UI launcher (create_demo/main with argparse: --port, --batch_size 'Default batch size for generation (1-8)', --enable-api, etc.). The actual generation pipeline is acestep/inference.py (generate_music + GenerationParams/GenerationConfig) delegating to AceStepHandler (acestep/handler.py) composed of mixins under acestep/core/generation/handler/. The API server (acestep/api_server.py) is the REST entrypoint (run_api_server.sh/start_api_server.*).",
+    "evidence": [
+     {
+      "file": "acestep/acestep_v15_pipeline.py",
+      "lines": "87-127,210-217,358-362",
+      "quote": "help=\"Default batch size for generation (1-8). Defaults to min(2, GPU_max) if not specified\""
+     },
+     {
+      "file": "acestep/handler.py",
+      "lines": "62-101"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "502-510"
+     }
+    ],
+    "confidence": "high"
+   }
+  ],
+  "open_questions": [
+   "Bit depth of 'wav' and 'flac' outputs: torchaudio.save via the soundfile backend is called without an explicit encoding (acestep/audio_utils.py:298-304), so the on-disk subtype depends on torchaudio's default for float32 input in the installed version; 'wav32' exists specifically to force 32-bit float (soundfile subtype='FLOAT'), implying plain 'wav' is intended as 16-bit PCM \u2014 verify empirically with one render (ffprobe) during M0.",
+   "GET /v1/models is registered twice (OpenRouter-format router first, wrapped-inventory route second); registration order means the OpenRouter shape should win \u2014 verify against the live server and standardize the TS client on /v1/model_inventory.",
+   "Seed reporting under use_random_seed=true: inference.py rolls one seed list for params/UUIDs (line 597) while the handler rolls its own internally for actual noise (generate_music.py:309-321 -> task_utils.prepare_seeds); confirm at runtime whether response seed_value reproduces audio (code reading says it does NOT in random mode; explicit-seed mode is consistent).",
+   "Whether relative reference_audio_path/src_audio_path values resolve against the server process CWD (they are passed through unresolved by validate_audio_path) \u2014 practical clients should prefer multipart upload.",
+   "GPU-tier duration cap with LM (gpu_config.max_duration_with_lm) on the target deployment hardware: requested durations above the tier cap are silently clamped in LM mode \u2014 check the tier printout at server startup for the actual ceiling on your machine."
+  ]
+ },
+ "verdicts": {
+  "verdicts": [
+   {
+    "claim": "Endpoints: POST /release_task, /query_result, /create_random_sample, /format_input, /v1/create_sample, GET /health, /v1/stats, /v1/models + /v1/model_inventory, POST /v1/init, GET /v1/audio; OpenRouter router adds GET /v1/models + POST /v1/chat/completions; LoRA/reinitialize/training routes exist",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "70-159",
+      "quote": "openrouter_router = create_openrouter_router(lambda: app.state)\n    app.include_router(openrouter_router)"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "146, 163, 179, 185, 191",
+      "quote": "@app.get(\"/health\") ... @app.get(\"/v1/stats\") ... @app.get(\"/v1/models\") ... @app.get(\"/v1/model_inventory\") ... @app.post(\"/v1/init\")"
+     },
+     {
+      "file": "acestep/api/http/sample_format_routes.py",
+      "lines": "30, 51, 162",
+      "quote": "@app.post(\"/create_random_sample\") ... @app.post(\"/format_input\") ... @app.post(\"/v1/create_sample\")"
+     },
+     {
+      "file": "acestep/api/http/lora_routes.py",
+      "lines": "60-132",
+      "quote": "@app.post(\"/v1/lora/load\") ... @app.get(\"/v1/lora/status\")"
+     },
+     {
+      "file": "acestep/api/http/reinitialize_route.py",
+      "lines": "25",
+      "quote": "@app.post(\"/v1/reinitialize\")"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "594, 653",
+      "quote": "@router.get(\"/v1/models\", response_model=ModelsResponse) ... @router.post(\"/v1/chat/completions\")"
+     }
+    ]
+   },
+   {
+    "claim": "GET /v1/models is shadowed by the OpenRouter router (registered first); wrapped inventory reliably at GET /v1/model_inventory",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/route_setup.py",
+      "lines": "70-73",
+      "quote": "app.include_router(openrouter_router)\n\n    register_model_service_routes("
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "594",
+      "quote": "@router.get(\"/v1/models\", response_model=ModelsResponse)"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "179-189, 102-125",
+      "quote": "@app.get(\"/v1/model_inventory\") ... \"supported_task_types\": _read_model_supported_tasks(checkpoint_dir, name)"
+     }
+    ],
+    "correction": "Confirmed at the code level: the OpenRouter router is included before model_service_routes registers its /v1/models, and Starlette matches routes in registration order. Note this is static-analysis truth; the analyst's own open question to verify against the live server remains sensible."
+   },
+   {
+    "claim": "/release_task accepts JSON, multipart/form-data, x-www-form-urlencoded, plus raw-body sniffing; 415 unsupported, 400 malformed JSON, 429 queue full",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_request_parser.py",
+      "lines": "88-205",
+      "quote": "raise HTTPException(status_code=400, detail=\"Malformed JSON payload\") ... raise HTTPException(\n        status_code=415,"
+     },
+     {
+      "file": "acestep/api/http/release_task_route.py",
+      "lines": "68-74",
+      "quote": "raise HTTPException(status_code=429, detail=\"Server busy: queue is full\")"
+     }
+    ]
+   },
+   {
+    "claim": "Parameter aliasing via PARAM_ALIASES; lookup order top-level body -> param_obj -> metas/meta/metadata/user_metadata/userMetadata; listed key aliases (prompt|caption, sample_query|description|desc, etc.)",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_param_parser.py",
+      "lines": "9-46",
+      "quote": "\"sample_query\": [\"sample_query\", \"sampleQuery\", \"description\", \"desc\"], ... \"track_classes\": [\"track_classes\", \"trackClasses\", \"instruments\"]"
+     },
+     {
+      "file": "acestep/api/http/release_task_param_parser.py",
+      "lines": "123-141",
+      "quote": "for key in (\"metas\", \"meta\", \"metadata\", \"user_metadata\", \"userMetadata\"): ... for source in (self._raw, self._param_obj, self._metas):"
+     }
+    ],
+    "correction": "Minor precision: aliases exist only for keys listed in PARAM_ALIASES; all other parameters (e.g. batch_size, lm_temperature) are still looked up in all three sources but only under their canonical name (parser.get falls back to [name], line 135). JSON null values are treated as absent (only non-None wins)."
+   },
+   {
+    "claim": "prompt (default \"\", alias caption) -> GenerationParams.caption; global_caption for SFT-stems lego; sample_query triggers create_sample (or sample_mode=true with 'NO USER INPUT'); use_format runs format_sample; no separate tags field",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "19-33",
+      "quote": "prompt: str = Field(default=\"\", description=\"Text prompt describing the music (local/per-track description for lego SFT)\")"
+     },
+     {
+      "file": "acestep/api/llm_generation_inputs.py",
+      "lines": "118-119, 127-146, 149-175",
+      "quote": "sample_query = req.sample_query if has_sample_query else \"NO USER INPUT\""
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "154-162",
+      "quote": "caption=caption,\n        global_caption=global_caption,"
+     }
+    ],
+    "correction": "Note: 'used only for SFT-stems lego tasks' for global_caption is the field-description semantics; mechanically global_caption is always forwarded to the DiT (inference.py:826 'global_caption': params.global_caption)."
+   },
+   {
+    "claim": "Instrumental is derived, not a flag: is_instrumental(lyrics) \u2014 empty/whitespace or exactly '[inst]'/'[instrumental]' => True; sample mode also infers from description ('instrumental', 'pure music'/'pure instrument', ends with ' solo')",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "135-143",
+      "quote": "return lyrics_clean in (\"[inst]\", \"[instrumental]\")"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "163",
+      "quote": "instrumental=is_instrumental(lyrics),"
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "89-97",
+      "quote": "elif description_lower.endswith(\" solo\") or description_lower == \"solo\":"
+     }
+    ]
+   },
+   {
+    "claim": "audio_duration optional default None; None/<=0 -> -1.0 auto sentinel; DURATION_MIN=10/DURATION_MAX=600 enforced only in LM constrained decoding (clamped to [10, min(gpu_max_with_lm, 600)]); no REST validation; DiT-only fallback 120s; cover/repaint/lego/extract lock duration to source",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "48",
+      "quote": "audio_duration: Optional[float] = None"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "14, 168",
+      "quote": "duration=float(audio_duration) if (audio_duration is not None and float(audio_duration) > 0) else _AUTO_DURATION_SENTINEL"
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "58-59",
+      "quote": "DURATION_MIN = 10\nDURATION_MAX = 600"
+     },
+     {
+      "file": "acestep/llm_inference.py",
+      "lines": "266-277",
+      "quote": "effective_duration = max(DURATION_MIN, min(gpu_max_dur, target_duration))"
+     },
+     {
+      "file": "acestep/core/generation/handler/padding_utils.py",
+      "lines": "75-88",
+      "quote": "fallback_duration = 120.0"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "819-820",
+      "quote": "if params.task_type in (\"cover\", \"cover-nofsq\", \"repaint\", \"lego\", \"extract\"):\n            audio_duration = None"
+     }
+    ],
+    "correction": "One refinement: in DiT-only mode (thinking=false, no LM), an explicit positive duration is used as-is to build the silence target \u2014 there is NO 600s cap at all on that path (padding_utils.py:75-76 uses the raw value)."
+   },
+   {
+    "claim": "bpm Optional[int] default None; BPM_MIN=30/BPM_MAX=300 enforced only in LM constrained decoding; REST forwards any int as '- bpm: {value}' metadata text",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "37",
+      "quote": "bpm: Optional[int] = None"
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "52-53",
+      "quote": "BPM_MIN = 30\nBPM_MAX = 300"
+     },
+     {
+      "file": "acestep/constrained_logits_processor.py",
+      "lines": "204",
+      "quote": "\"bpm\": {\"min\": BPM_MIN, \"max\": BPM_MAX},"
+     },
+     {
+      "file": "acestep/core/generation/handler/metadata_utils.py",
+      "lines": "34-39, 62-79",
+      "quote": "f\"- bpm: {bpm}\\n\""
+     }
+    ]
+   },
+   {
+    "claim": "key_scale default \"\" with aliases; 70 valid keyscales (7 notes x 5 accidentals x 2 modes); not validated at REST, passed as metadata ('N/A' if empty)",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "38",
+      "quote": "key_scale: str = \"\""
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "28-42",
+      "quote": "VALID_KEYSCALES.add(f\"{note}{acc} {mode}\")"
+     },
+     {
+      "file": "acestep/core/generation/handler/metadata_utils.py",
+      "lines": "72",
+      "quote": "metadata_dict[\"keyscale\"] = key_scale if key_scale.strip() else \"N/A\""
+     }
+    ]
+   },
+   {
+    "claim": "time_signature default \"\"; valid values per VALID_TIME_SIGNATURES=[2,3,4,6]; no REST validation, forwarded unless empty/'N/A'",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "39",
+      "quote": "time_signature: str = \"\""
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "61-66",
+      "quote": "VALID_TIME_SIGNATURES = [2, 3, 4, 6]"
+     },
+     {
+      "file": "acestep/core/generation/handler/metadata_utils.py",
+      "lines": "73-76",
+      "quote": "if time_signature.strip() and time_signature != \"N/A\" and time_signature:"
+     }
+    ]
+   },
+   {
+    "claim": "vocal_language default 'en' at REST (aliases vocalLanguage/language); 51-entry VALID_LANGUAGES; not validated at REST; use_cot_language=true lets LM override",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "40",
+      "quote": "vocal_language: str = \"en\""
+     },
+     {
+      "file": "acestep/constants.py",
+      "lines": "13-20",
+      "quote": "VALID_LANGUAGES = [\n    'ar', 'az', ... 'unknown'\n]"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "806-807",
+      "quote": "if params.use_cot_language:\n                dit_input_vocal_language = lm_generated_metadata.get(\"vocal_language\", dit_input_vocal_language)"
+     }
+    ]
+   },
+   {
+    "claim": "Seed: Union[int,str] default -1, use_random_seed default true; determinism needs use_random_seed=false + seed>=0 or comma list; single seed with batch>1 pins only sample 0; random seeds 0..2^32-1; reported seed_value in random mode comes from a separate inference.py roll and does NOT match the seeds the DiT actually used",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "43-44",
+      "quote": "use_random_seed: bool = True\n    seed: Union[int, str] = -1"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "70-96",
+      "quote": "if not req.use_random_seed and req.seed is not None:"
+     },
+     {
+      "file": "acestep/core/generation/handler/task_utils.py",
+      "lines": "48-56",
+      "quote": "if has_single_non_negative_seed and actual_batch_size > 1 and i > 0:\n                        actual_seed_list.append(random.randint(0, 2**32 - 1))"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "597, 914, 948",
+      "quote": "actual_seed_list, _ = dit_handler.prepare_seeds(actual_batch_size, seed_for_generation, config.use_random_seed) ... audio_params[\"seed\"] = seed_list[idx]"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music_request.py",
+      "lines": "73",
+      "quote": "actual_seed_list, seed_value_for_ui = self.prepare_seeds(actual_batch_size, seed, use_random_seed)"
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "44-51, 103",
+      "quote": "seed = audio_params.get(\"seed\")"
+     }
+    ],
+    "correction": "Two precisions: (1) 0..2^32-1 applies only to randomly rolled seeds; explicit seeds are parsed via int(float(x)) with no range validation (task_utils.py:37, job_generation_setup.py:91). (2) With a single explicit seed and batch>1, the random padding seeds for samples 1..n in the response are ALSO from the inference.py roll and differ from the handler's actual padding roll \u2014 only sample 0's seed is trustworthy; full batch reproducibility requires a complete comma-separated list."
+   },
+   {
+    "claim": "batch_size Optional, default None->2; no max-8 enforcement in REST path (8 is Gradio/GPU-tier); handler clamps >=1 and VRAM guard may reduce; MPS cover batch>1 runs sequentially; all paths returned in audio_paths",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "49",
+      "quote": "batch_size: Optional[int] = None"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "203",
+      "quote": "batch_size = req.batch_size if req.batch_size is not None else 2"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music_request.py",
+      "lines": "70-72",
+      "quote": "actual_batch_size = max(1, actual_batch_size)\n        actual_batch_size = self._vram_guard_reduce_batch(actual_batch_size, audio_duration=audio_duration)"
+     },
+     {
+      "file": "acestep/gpu_config.py",
+      "lines": "322-454",
+      "quote": "\"max_batch_size_with_lm\": 8,\n        \"max_batch_size_without_lm\": 8,"
+     },
+     {
+      "file": "acestep/api/job_generation_runtime.py",
+      "lines": "44-52",
+      "quote": "if req.task_type in (\"cover\", \"cover-nofsq\") and handler_device == \"mps\":"
+     },
+     {
+      "file": "docs/en/API.md",
+      "lines": "~206",
+      "quote": "| `batch_size` | int | `2` | Batch generation count (max 8) |"
+     }
+    ]
+   },
+   {
+    "claim": "model selects among up to 3 pre-initialized handler slots (ACESTEP_CONFIG_PATH default 'acestep-v15-turbo', PATH2, PATH3) by exact basename; unmatched name silently falls back to primary; POST /v1/init switches at runtime; dit_model echoed in result",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/job_model_selection.py",
+      "lines": "29-64",
+      "quote": "f\"[API Server] Job {job_id}: Model '{requested_model}' not found in \"\n            f\"{available_models}, using primary: {selected_model_name}\""
+     },
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "100-115",
+      "quote": "app.state._config_path = os.getenv(\"ACESTEP_CONFIG_PATH\", \"acestep-v15-turbo\")"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "17-31, 191-231",
+      "quote": "slot: Optional[int] = Field(default=None, ge=1, le=3,"
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "133-134",
+      "quote": "\"lm_model\": lm_model_name,\n        \"dit_model\": dit_model_name,"
+     }
+    ]
+   },
+   {
+    "claim": "Audio input three ways: multipart uploads (ref_audio/reference_audio, ctx_audio/src_audio); path fields validated by validate_audio_path (absolute outside temp -> 400, '..' -> 400, relative OK) contradicting docs' 'requires absolute path'; no base64 on /release_task (base64 only via OpenRouter chat); temp uploads deleted after job",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_request_parser.py",
+      "lines": "110-126",
+      "quote": "ref_upload = form.get(\"ref_audio\") or form.get(\"reference_audio\")\n            ctx_upload = form.get(\"ctx_audio\") or form.get(\"src_audio\")"
+     },
+     {
+      "file": "acestep/api/http/release_task_audio_paths.py",
+      "lines": "27-46",
+      "quote": "if os.path.isabs(path):\n        raise HTTPException(status_code=400, detail=\"absolute audio file paths are not allowed\")"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "126-131, 163",
+      "quote": "def _base64_to_temp_file(b64_data: str, audio_format: str = \"mp3\") -> str:"
+     },
+     {
+      "file": "acestep/api/job_runtime_state.py",
+      "lines": "64-78",
+      "quote": "async def cleanup_job_temp_files(app_state: Any, job_id: str) -> None:"
+     },
+     {
+      "file": "docs/en/API.md",
+      "lines": "~246",
+      "quote": "**Edit/Reference Audio Parameters** (requires absolute path on server):"
+     }
+    ],
+    "correction": "One important caveat the claim misses (added to missed facts): in multipart/urlencoded bodies, validate_audio_path is applied only to the exact ref_audio_path/reference_audio_path/ctx_audio_path/src_audio_path fields; camelCase aliases or paths nested in param_obj/metas reach the model unvalidated via the builder fallback (release_task_request_builder.py:32-33)."
+   },
+   {
+    "claim": "task_type valid set TASK_TYPES (7 incl. complete); turbo subset TASK_TYPES_TURBO (4); src-audio-requiring tasks error without src unless audio_code_string; codes on text2music auto-switch to 'cover'; track_name/track_classes/instruction auto-resolution",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/constants.py",
+      "lines": "76-89",
+      "quote": "TASK_TYPES = [\"text2music\", \"repaint\", \"cover\", \"cover-nofsq\", \"extract\", \"lego\", \"complete\"]\n...\nTASK_TYPES_TURBO = [\"text2music\", \"repaint\", \"cover\", \"cover-nofsq\"]"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music_request.py",
+      "lines": "47-56, 130, 177-193",
+      "quote": "if task_type == \"text2music\" and self._has_non_empty_audio_codes(audio_code_string):\n            return \"cover\", TASK_INSTRUCTIONS[\"cover\"] ... _src_audio_required_tasks = {\"cover\", \"cover-nofsq\", \"repaint\", \"lego\", \"extract\"}"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "25-67",
+      "quote": "if req.task_type == \"complete\":\n            if req.track_classes:"
+     },
+     {
+      "file": "acestep/api/http/model_service_routes.py",
+      "lines": "33-46",
+      "quote": "is_turbo = config.get(\"is_turbo\", False)"
+     }
+    ]
+   },
+   {
+    "claim": "Quality knobs: inference_steps default 8 clamped >=1 (turbo ~8, base 32-100); guidance_scale 7.0 forced to 1.0 on turbo; use_adg false; cfg_interval 0/1; shift 3.0 (<=0 -> 1.0, base only); infer_method ode|sde; timesteps string overrides steps+shift, unparseable->None; sampler_mode/velocity/dcw/retake/flow_edit/latent/fade/normalization NOT exposed over REST (peak-normalize -1 dBFS on by default)",
+    "verdict": "partially_correct",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "41-42, 88-99",
+      "quote": "inference_steps: int = 8\n    guidance_scale: float = 7.0"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "212-218",
+      "quote": "if self.shift is not None and self.shift <= 0:\n            self.shift = 1.0\n        # inference_steps=0 produces empty diffusion loop (silent output)\n        if self.inference_steps is not None and self.inference_steps < 1:\n            self.inference_steps = 1"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music.py",
+      "lines": "288-294",
+      "quote": "if self.is_turbo_model() and guidance_scale != 1.0: ... guidance_scale = 1.0"
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "124-132",
+      "quote": "def parse_timesteps(value: Optional[str]) -> Optional[list[float]]:"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "124-199, 978-991",
+      "quote": "enable_normalization: bool = True\n    normalization_db: float = -1.0 ... if params.enable_normalization and params.normalization_db <= 0.0:"
+     },
+     {
+      "file": "docs/en/API.md",
+      "lines": "~202",
+      "quote": "Turbo model: 1-20 (recommended 8). Base model: 1-200 (recommended 32-64)."
+     }
+    ],
+    "correction": "All operative facts verified. Only error: the '(turbo ~8, base 32-100)' gloss is unsupported \u2014 code enforces only >=1 (inference.py:216-218); the docs say turbo 1-20 (recommended 8) and base 1-200 (recommended 32-64), not 32-100. Also worth knowing: DCW wavelet correction is ON by default (dcw_enabled=True, inference.py:148) and cannot be disabled over REST."
+   },
+   {
+    "claim": "Repaint/cover controls: repainting_start 0.0; repainting_end None (<0/None = end of source, negative start = left outpaint); repaint_mode balanced; repaint_strength 0.5 pydantic ge=0 le=1 (balanced only); chunk_mask_mode auto; crossfade frames 10 / wav sec 0.0; audio_cover_strength 1.0; cover_noise_strength 0.0 (0=pure noise, 1=closest to src); audio_code_string skips LM codes",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "51-83",
+      "quote": "repaint_strength: float = Field(\n        default=0.5,\n        ge=0.0,\n        le=1.0,"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music.py",
+      "lines": "26-48",
+      "quote": "if mode == \"aggressive\":\n        return 0.0, 0, 0.0\n    if mode == \"conservative\":\n        return 1.0, 25, 0.05"
+     },
+     {
+      "file": "acestep/core/generation/handler/padding_utils.py",
+      "lines": "42-48",
+      "quote": "left_padding_duration = max(0, -repainting_start) if repainting_start is not None else 0"
+     }
+    ],
+    "correction": "Nuance: repainting_end=0 (or 0.0) is coerced to -1 (= end of source) by a falsy check at job_generation_setup.py:179 (`req.repainting_end if req.repainting_end else -1`), so 0 cannot be used as an explicit end time."
+   },
+   {
+    "claim": "thinking defaults FALSE at REST (overrides dataclass True); LM still runs for CoT (use_cot_caption/language default true, use_cot_metas = not sample_mode); LM force-skipped for cover/cover-nofsq/repaint/extract; lm defaults temp 0.85, cfg 2.5 (dataclass 2.0), top_k None, top_p 0.9, neg 'NO USER INPUT'; constrained_decoding accepted but ignored (use_constrained_decoding hardcoded True, only debug forwarded); lm_repetition_penalty accepted, never consumed; lm_model_path/lm_backend only on first lazy LLM init",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "27, 107-125",
+      "quote": "thinking: bool = False ... lm_cfg_scale: float = 2.5"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "192-194, 612, 632-634",
+      "quote": "thinking: bool = True\n    lm_temperature: float = 0.85\n    lm_cfg_scale: float = 2.0 ... skip_lm_tasks = {\"cover\", \"cover-nofsq\", \"repaint\", \"extract\"}"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "197-200, 210",
+      "quote": "use_cot_metas=not sample_mode,\n        use_cot_caption=use_cot_caption,\n        use_cot_language=use_cot_language,\n        use_constrained_decoding=True,"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "115-117",
+      "quote": "LM_DEFAULT_TEMPERATURE = 0.85\nLM_DEFAULT_CFG_SCALE = 2.5\nLM_DEFAULT_TOP_P = 0.9"
+     },
+     {
+      "file": "acestep/api/llm_readiness.py",
+      "lines": "33-37, 61-66",
+      "quote": "if initialized or had_error is not None:\n            return"
+     },
+     {
+      "file": "acestep/api/http/release_task_request_builder.py",
+      "lines": "92",
+      "quote": "lm_repetition_penalty=parser.float(\"lm_repetition_penalty\", 1.0),"
+     }
+    ],
+    "correction": "All asserted facts verified (req.constrained_decoding and req.lm_repetition_penalty are never read after model construction; grep shows no downstream consumer). Addition: allow_lm_batch is ALSO effectively dead \u2014 GenerationConfig.allow_lm_batch is set (job_generation_setup.py:206) but generate_music never reads it; LM chunking uses the fixed lm_batch_chunk_size=8 default (inference.py:244-247, 687)."
+   },
+   {
+    "claim": "Analysis-only flags: extract_codes_only (requires src; returns audio_codes), full_analysis_only (encode + LM understand; returns bpm/keyscale/timesignature/duration/genre/prompt/lyrics/language/metas/audio_codes), analysis_only (LM CoT metas only); all return empty audio_paths",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "84-86",
+      "quote": "analysis_only: bool = False\n    full_analysis_only: bool = False\n    extract_codes_only: bool = False"
+     },
+     {
+      "file": "acestep/api/job_analysis_runtime.py",
+      "lines": "38-114",
+      "quote": "if not params.src_audio:\n            raise ValueError(\"extract_codes_only requires src_audio_path to be set.\")"
+     }
+    ]
+   },
+   {
+    "claim": "audio_format REST default 'mp3' (dataclass default 'flac' overridden); supported flac/mp3/opus/aac/wav/wav32 with warning fallback; 48000 Hz engine rate; MP3 via ffmpeg libmp3lame fixed 128k/48k over REST (mp3_bitrate/mp3_sample_rate not request fields); wav32 = 32-bit float WAV saved as .wav; flac/wav soundfile backend, opus/aac ffmpeg backend; use_tiled_decode accepted but never forwarded (handler default True)",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_models.py",
+      "lines": "101-105",
+      "quote": "audio_format: str = Field(\n        default=\"mp3\","
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "243-251, 920-921, 1025-1033",
+      "quote": "audio_format: str = \"flac\"  # Default to FLAC for fast saving\n    mp3_bitrate: str = \"128k\"\n    mp3_sample_rate: int = 48000"
+     },
+     {
+      "file": "acestep/audio_utils.py",
+      "lines": "117-120, 169-177, 282-304",
+      "quote": "MP3_DEFAULT_BITRATE = \"128k\" ... '-codec:a', 'libmp3lame', ... sf.write(str(output_path), audio_np, sample_rate, subtype='FLOAT', format='WAV')"
+     },
+     {
+      "file": "acestep/handler.py",
+      "lines": "121",
+      "quote": "self.sample_rate = 48000"
+     },
+     {
+      "file": "acestep/api/job_generation_setup.py",
+      "lines": "204-211",
+      "quote": "config = GenerationConfig(\n        batch_size=batch_size,\n        allow_lm_batch=req.allow_lm_batch,\n        use_random_seed=req.use_random_seed,\n        seeds=_resolve_generation_seeds(req),\n        audio_format=req.audio_format,"
+     },
+     {
+      "file": "acestep/core/generation/handler/generate_music.py",
+      "lines": "217",
+      "quote": "use_tiled_decode: bool = True,"
+     }
+    ]
+   },
+   {
+    "claim": "Output at {ACESTEP_TMPDIR | {repo}/.cache/acestep/tmp}/api_audio/{deterministic-sha256-uuid}.{ext}; UUID from full per-audio params dict incl. seed/LoRA/format; response maps to /v1/audio?path={urlencoded} plus raw_audio_paths; GET /v1/audio 403 outside temp_audio_dir",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/lifespan_runtime.py",
+      "lines": "60-61, 135-136",
+      "quote": "tmp_root = (os.getenv(\"ACESTEP_TMPDIR\") or os.path.join(cache_root, \"tmp\")).strip() ... app.state.temp_audio_dir = os.path.join(tmp_root, \"api_audio\")"
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "1017-1026",
+      "quote": "audio_key = generate_uuid_from_params(audio_params) ... audio_file = os.path.join(save_dir, f\"{audio_key}.{file_ext}\")"
+     },
+     {
+      "file": "acestep/audio_utils.py",
+      "lines": "532-548",
+      "quote": "params_json = json.dumps(params_dict, sort_keys=True, ensure_ascii=False)\n    hash_obj = hashlib.sha256(params_json.encode('utf-8'))"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "200-207",
+      "quote": "return f\"/v1/audio?path={encoded_path}\""
+     },
+     {
+      "file": "acestep/api/http/audio_route.py",
+      "lines": "23-28",
+      "quote": "raise HTTPException(status_code=403, detail=\"Access denied: path outside allowed directory\")"
+     }
+    ]
+   },
+   {
+    "claim": "Lifecycle: /release_task -> wrapped {task_id, status:'queued', queue_position}; /query_result takes task_id_list (list or JSON string) returning per task {task_id, result:<JSON string of array>, status 0/1/2, progress_text}; elements carry file/wave/status/create_time/env/prompt/lyrics/metas/generation_info/seed_value/lm_model/dit_model/progress/stage; queue maxsize 200, workers 1, 7-day cache, 24h purge, 1h timeout",
+    "verdict": "partially_correct",
+    "evidence": [
+     {
+      "file": "acestep/api/http/release_task_route.py",
+      "lines": "85",
+      "quote": "return wrap_response({\"task_id\": record.job_id, \"status\": \"queued\", \"queue_position\": position})"
+     },
+     {
+      "file": "acestep/api/http/query_result_service.py",
+      "lines": "84-117, 134-139",
+      "quote": "\"metas\": {\n                        \"bpm\": metas.get(\"bpm\"),\n                        \"duration\": metas.get(\"duration\"),\n                        \"genres\": metas.get(\"genres\", \"\"),\n                        \"keyscale\": metas.get(\"keyscale\", \"\"),\n                        \"timesignature\": metas.get(\"timesignature\", \"\"),\n                    },"
+     },
+     {
+      "file": "acestep/api/jobs/local_cache_updates.py",
+      "lines": "78-114",
+      "quote": "\"generation_info\": generation_info,\n                        \"seed_value\": seed_value,\n                        \"lm_model\": lm_model,\n                        \"dit_model\": dit_model,\n                        \"progress\": 1.0,\n                        \"stage\": \"succeeded\","
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "109-113, 194-195",
+      "quote": "RESULT_EXPIRE_SECONDS = 7 * 24 * 60 * 60  # 7 days\nTASK_TIMEOUT_SECONDS = 3600"
+     },
+     {
+      "file": "acestep/api/jobs/store.py",
+      "lines": "71-75",
+      "quote": "def __init__(self, max_age_seconds: int = 86400) -> None:"
+     },
+     {
+      "file": "acestep/api/server_utils.py",
+      "lines": "10",
+      "quote": "STATUS_MAP = {\"queued\": 0, \"running\": 0, \"succeeded\": 1, \"failed\": 2}"
+     }
+    ],
+    "correction": "The rich element shape (generation_info, seed_value, lm_model, dit_model, progress, stage, metas incl. prompt/lyrics) is the LOCAL-CACHE-derived shape (local_cache_updates.py:78-114). The in-memory-store fallback shape for succeeded jobs (query_result_service.py:84-117) omits generation_info/seed_value/lm_model/dit_model/progress/stage, and its metas lacks prompt/lyrics. Failed jobs: the cache shape carries NO error text (local_cache_updates.py:116-124, only stage:'failed'); error appears only in the store-fallback non-succeeded shape (query_result_service.py:130). Also progress_text is the server-global last log line, not per-job (query_result_route.py:64). Everything else (envelope, status codes, queue/timeout constants) confirmed."
+   },
+   {
+    "claim": "LRC generation is NOT available over REST; exists only as handler methods (get_lyric_timestamp, get_timestamps_and_lrc) invoked by the Gradio UI",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/core/generation/handler/lyric_timestamp.py",
+      "lines": "15",
+      "quote": "def get_lyric_timestamp("
+     },
+     {
+      "file": "acestep/core/scoring/dit_alignment.py",
+      "lines": "375, 411",
+      "quote": "def format_lrc( ... def get_timestamps_and_lrc("
+     },
+     {
+      "file": "acestep/ui/gradio/events/results/generation_progress.py",
+      "lines": "55, 336-337",
+      "quote": "auto_lrc, ... if auto_lrc:"
+     },
+     {
+      "file": "acestep/api/job_result_payload.py",
+      "lines": "113-137"
+     }
+    ],
+    "correction": "Verified by grep: zero matches for lrc/LRC/get_lyric_timestamp in acestep/api/ (excluding tests); no LRC field in any API response builder or jobs/models.py."
+   },
+   {
+    "claim": "PMI quality scoring NOT available over REST; implemented in acestep/core/scoring/ and invoked only from the Gradio UI (calculate_score_handler); no score field in API payloads",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/ui/gradio/events/results/scoring.py",
+      "lines": "1-44",
+      "quote": "PMI (Pointwise Mutual Information) removes condition bias:\n    ``score = log P(condition|codes) - log P(condition)``"
+     },
+     {
+      "file": "acestep/core/scoring/",
+      "lines": "dir listing",
+      "quote": "dit_alignment.py dit_score.py lm_score.py"
+     },
+     {
+      "file": "acestep/api/jobs/models.py",
+      "lines": "21-52",
+      "quote": "class JobResult(BaseModel): ... (no score field)"
+     }
+    ],
+    "correction": "Verified by grep: no 'score' references anywhere in acestep/api/."
+   },
+   {
+    "claim": "Auth optional via ACESTEP_API_KEY: body 'ai_token' or Authorization Bearer/raw on body-parsing endpoints; header-only verify_api_key on /v1/audio, /v1/models, /v1/stats, /v1/init; disabled when unset; responses wrapped {data, code, error, timestamp, extra}",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/api/http/auth.py",
+      "lines": "23-75",
+      "quote": "ai_token = body.get(\"ai_token\") if body else None ... token = authorization[7:] if authorization.startswith(\"Bearer \") else authorization"
+     },
+     {
+      "file": "acestep/api_server.py",
+      "lines": "120-128, 190-192",
+      "quote": "api_key = os.getenv(\"ACESTEP_API_KEY\", None)\n    set_api_key(api_key)"
+     }
+    ]
+   },
+   {
+    "claim": "OpenRouter surface: POST /v1/chat/completions with ChatCompletionRequest (messages incl. base64 audio blobs, audio_config, temperature/top_p/top_k/seed comma-separated, stream, ACE-specific thinking/guidance_scale/batch_size/lyrics/sample_mode/use_format/use_cot_*/task_type/repainting_*/audio_cover_strength/audio_codes/cover_noise_strength/inference_steps/infer_method/lm_cfg_scale/use_cot_metas); default format mp3; audio returned as base64 data URLs",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/openrouter_models.py",
+      "lines": "58-113",
+      "quote": "seed: Optional[Union[int, str]] = Field(default=None, description=\"Seed(s) for reproducibility. Comma-separated for batch (e.g. '42,123,456')\")"
+     },
+     {
+      "file": "acestep/openrouter_adapter.py",
+      "lines": "43, 653-760",
+      "quote": "DEFAULT_AUDIO_FORMAT = \"mp3\""
+     },
+     {
+      "file": "acestep/openrouter_models.py",
+      "lines": "120-128",
+      "quote": "class AudioOutputUrl(BaseModel):\n    \"\"\"Audio output URL (base64 data URL).\"\"\""
+     }
+    ]
+   },
+   {
+    "claim": "acestep_v15_pipeline.py is the Gradio UI launcher (create_demo/main, argparse --port/--batch_size 1-8/--enable-api), not the inference pipeline; real pipeline is acestep/inference.py generate_music delegating to AceStepHandler mixins; api_server.py is the REST entrypoint",
+    "verdict": "confirmed",
+    "evidence": [
+     {
+      "file": "acestep/acestep_v15_pipeline.py",
+      "lines": "87-127, ~355-366",
+      "quote": "help=\"Default batch size for generation (1-8). Defaults to min(2, GPU_max) if not specified\" ... \"--enable-api\","
+     },
+     {
+      "file": "acestep/handler.py",
+      "lines": "62-101",
+      "quote": "class AceStepHandler(\n    DiffusionMixin,\n    GenerateMusicMixin, ..."
+     },
+     {
+      "file": "acestep/inference.py",
+      "lines": "502-510",
+      "quote": "def generate_music(\n    dit_handler,\n    llm_handler,\n    params: GenerationParams,\n    config: GenerationConfig,"
+     }
+    ]
+   }
+  ],
+  "missed": [
+   "CORS is locked to localhost: allow_origins ['null','http://localhost','http://127.0.0.1'] plus regex ^https?://(localhost|127.0.0.1)(:port)?$, methods GET/POST/OPTIONS, headers Content-Type/Authorization (acestep/api/route_setup.py:62-68). A Next.js app served from any other origin cannot call the engine directly from the browser \u2014 proxy through the Next.js server.",
+   "Models are NOT loaded at startup by default: ACESTEP_NO_INIT defaults to true (acestep/api/startup_model_init.py:185), so DiT weights lazy-load on the FIRST job (acestep/api/job_runtime_state.py:11-61), making the first /release_task job take minutes; /health reports models_initialized=false until then. Set ACESTEP_NO_INIT=false for eager loading.",
+   "/query_result for an UNKNOWN task_id returns {task_id, result:'[]', status:0} \u2014 indistinguishable from a queued job (acestep/api/http/query_result_service.py:195). Clients must apply their own poll timeouts; a typo'd id polls forever.",
+   "progress_text in /query_result is the server-global last captured log line (log_buffer.last_message), not per-job text (acestep/api/http/query_result_route.py:64, query_result_service.py:59,133) \u2014 it interleaves across concurrent jobs; use the per-element progress/stage fields instead.",
+   "Error shape inconsistency: transport errors (400/401/415/429, /v1/audio 403/404) are FastAPI HTTPException bodies {detail:...}, NOT the {data,code,error,timestamp,extra} wrapper, while some endpoints (e.g. /format_input, /v1/create_sample, /v1/init) return wrapped errors with code 500 and HTTP 200. A TS client needs both error parsers.",
+   "Path-validation bypass: in multipart and x-www-form-urlencoded bodies only the exact fields ref_audio_path/reference_audio_path/ctx_audio_path/src_audio_path are run through validate_audio_path; camelCase aliases (refAudioPath, sourceAudioPath...) or paths nested in param_obj/metas flow into the request UNVALIDATED via the builder fallback (acestep/api/http/release_task_request_builder.py:32-33; release_task_request_parser.py:116-126,146-151,186-191). Only the JSON branch validates through the alias-aware parser.",
+   "allow_lm_batch (alias parallel_thinking) is a dead field too: it is stored on GenerationConfig (job_generation_setup.py:206) but generate_music never reads it; LM chunking always uses the fixed lm_batch_chunk_size=8 default (acestep/inference.py:244-247,687-688).",
+   "In DiT-only mode (thinking=false / LM unavailable) an explicit audio_duration has NO upper bound \u2014 the raw value sizes the silence target (acestep/core/generation/handler/padding_utils.py:75-76); DURATION_MAX=600 only bites via LM constrained decoding. A client should clamp duration itself.",
+   "repainting_end=0 is coerced to -1 (end of source) by a falsy check (acestep/api/job_generation_setup.py:179: 'req.repainting_end if req.repainting_end else -1'); 0 cannot be an explicit end point.",
+   "Seed reporting asymmetry vs the UI: the Gradio UI reads the handler's true seeds from result.extra_outputs['seed_value'] (ui/gradio/events/results/generation_progress.py:224) while the REST payload derives seed_value from the inference.py-rolled per-audio params (job_result_payload.py:44-51,103) \u2014 corroborating that REST seed_value in random mode (and the padded seeds for batch>1 single-seed) do not reproduce the audio.",
+   "LM requirement split: thinking, sample_mode/sample_query, use_format, full_analysis_only HARD-FAIL the job if the LLM cannot initialize (RuntimeError '5Hz LM init failed', acestep/api/llm_generation_inputs.py:87-97), whereas use_cot_caption/use_cot_language silently degrade to false (lines 99-106). ACESTEP_INIT_LLM=false blocks lazy LM load entirely (acestep/api/llm_readiness.py:40-57).",
+   "On MPS, cover/cover-nofsq requests force-UNLOAD the LM before generation (acestep/api/llm_generation_inputs.py:75-85), so a subsequent thinking=true request pays LM re-init cost (relevant on this Darwin host).",
+   "A 429 'queue full' on /release_task still creates an orphan 'queued' record in the job store before the queue check (acestep/api/http/release_task_route.py:66-74); the returned task_id is never queued.",
+   "GET /v1/audio media-type map only covers .mp3/.wav/.flac/.ogg \u2014 .opus/.aac files are served as audio/mpeg (acestep/api/http/audio_route.py:32-39). And when ACESTEP_API_KEY is set, /v1/audio requires the Authorization header, so returned audio URLs cannot be used directly in <audio src> tags; the TS client must proxy or stream with the header.",
+   "DCW (wavelet correction) is enabled by default and not exposed over REST (GenerationParams.dcw_enabled=True, acestep/inference.py:148), as is sampler_mode='euler' \u2014 REST output is the DCW-on path; parity with CLI/UI experiments requires matching those defaults.",
+   "Identical-parameter requests produce identical deterministic filenames (SHA-256 UUID over the full params dict incl. seed/LoRA state/format, acestep/audio_utils.py:532-548 + inference.py:1017), so a repeat request with the same explicit seed overwrites/reuses the same file in api_audio \u2014 a free idempotency/cache key for the client, but a hazard if files are deleted server-side."
+  ]
+ }
+}
