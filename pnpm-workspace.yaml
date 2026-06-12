@@ -1,0 +1,8 @@
+# pnpm settings (single-package repo; this file exists for the settings keys below).
+# Native/build-script packages explicitly allowed to run postinstall builds:
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+  "@tailwindcss/oxide": true

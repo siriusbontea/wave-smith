@@ -2,16 +2,16 @@
 node_modules/
 .pnpm-store/
 
-# Build output
-.next/
-out/
-dist/
+# Build output (anchored — only repo-root dirs)
+/.next/
+/out/
+/dist/
 
-# Runtime data (generated audio, sqlite db)
-data/
+# Runtime data (generated audio, sqlite db) — anchored: lib code may have data/ subdirs
+/data/
 
-# Engine clone (external pinned dependency)
-engine/
+# Engine clone (external pinned dependency) — anchored: lib/engine/ is app code!
+/engine/
 
 # Env
 .env
@@ -20,3 +20,7 @@ engine/
 # OS / editor
 .DS_Store
 *.log
+
+# Next.js / TypeScript build artifacts
+*.tsbuildinfo
+next-env.d.ts
