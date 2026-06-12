@@ -37,6 +37,11 @@ export interface GenerateRequest {
   prompt: string;
   /** User lyrics, passed VERBATIM to the engine (M0-verified). Empty or "[inst]" ⇒ instrumental. */
   lyrics: string;
+  /** Engine Simple Mode: the LM invents lyrics/caption/metadata from the
+   *  prompt (sample_mode + sample_query). REQUIRED for vocal forges with no
+   *  user lyrics — empty lyrics would otherwise render an instrumental
+   *  (ENGINE_NOTES §3: is_instrumental("") is true). */
+  simpleMode?: boolean;
   /** Target duration in seconds; omit for engine-auto. Clamped 10–600 client-side. */
   durationS?: number;
   bpm?: number;

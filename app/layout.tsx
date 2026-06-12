@@ -17,6 +17,10 @@ export const metadata: Metadata = {
     "Local-first AI music studio — describe a song, get full tracks with vocals. 100% on your machine.",
 };
 
+import Link from "next/link";
+import { Providers } from "@/components/providers";
+import { StatusBanner } from "@/components/status-banner";
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -25,7 +29,23 @@ export default function RootLayout({
   return (
     <html lang="en" className={cn("dark h-full antialiased", "font-sans", geist.variable)}>
       <body className="min-h-full flex flex-col bg-background text-foreground">
-        {children}
+        <Providers>
+          <StatusBanner />
+          <header className="flex items-center justify-between border-b px-4 py-3">
+            <Link href="/" className="text-lg font-semibold tracking-tight">
+              Wavesmith
+            </Link>
+            <nav className="flex gap-4 text-sm">
+              <Link href="/" className="text-muted-foreground hover:text-foreground">
+                Create
+              </Link>
+              <Link href="/library" className="text-muted-foreground hover:text-foreground">
+                Library
+              </Link>
+            </nav>
+          </header>
+          {children}
+        </Providers>
       </body>
     </html>
   );

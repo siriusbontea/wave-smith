@@ -182,6 +182,9 @@ export class Queue {
       prompt: payload.prompt,
       // Engine contract: "[inst]" requests an instrumental render (ENGINE_NOTES §3).
       lyrics: payload.instrumental ? "[inst]" : payload.lyrics,
+      // Vocal forge with no user lyrics ⇒ engine Simple Mode, or the engine
+      // would treat empty lyrics as instrumental — the LM writes the lyrics.
+      simpleMode: !payload.instrumental && !payload.lyrics.trim(),
       durationS: payload.durationS,
       bpm: payload.bpm,
       keyScale: payload.keyScale,

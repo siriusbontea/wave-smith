@@ -170,6 +170,32 @@ describe("AceStepClient.getTask", () => {
 });
 
 describe("AceStepClient.generate", () => {
+  it("emits sample_mode + sample_query for Simple Mode requests", async () => {
+    stubFetchOnce(envelope({ task_id: "t", status: "queued", queue_position: 1 }));
+    const client = new AceStepClient(BASE);
+    await client.generate({
+      prompt: "an upbeat song about rain",
+      lyrics: "",
+      simpleMode: true,
+      batchSize: 1,
+      seeds: [1],
+    });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.sample_mode).toBe(true);
+    expect(body.sample_query).toBe("an upbeat song about rain");
+  });
+
+  it("omits sample fields for normal (lyrics-supplied) requests", async () => {
+    stubFetchOnce(envelope({ task_id: "t", status: "queued", queue_position: 1 }));
+    const client = new AceStepClient(BASE);
+    await client.generate({ prompt: "p", lyrics: "[verse]\nx", batchSize: 1, seeds: [1] });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.sample_mode).toBeUndefined();
+    expect(body.sample_query).toBeUndefined();
+  });
+
   it("sends explicit comma-joined seeds, wav format, clamped batch", async () => {
     stubFetchOnce(envelope({ task_id: "task-9", status: "queued", queue_position: 1 }));
     const client = new AceStepClient(BASE);

@@ -151,6 +151,19 @@ export class AceStepClient implements EngineClient {
       prompt: req.prompt,
       lyrics: req.lyrics,
       batch_size: batchSize,
+      // Simple Mode: the LM writes lyrics/caption/metas from the description.
+      // Without this, a vocal forge with empty lyrics renders an INSTRUMENTAL
+      // (engine: is_instrumental("") — ENGINE_NOTES §3). The LM's plan
+      // replaces request metas wholesale (duration included), so a requested
+      // duration goes in as a textual hint — best effort, live-verified.
+      ...(req.simpleMode
+        ? {
+            sample_mode: true,
+            sample_query: req.durationS
+              ? `${req.prompt} (target length: about ${Math.round(req.durationS)} seconds)`
+              : req.prompt,
+          }
+        : {}),
       // Reproducibility requires explicit seeds (ENGINE_NOTES §3).
       use_random_seed: false,
       seed: req.seeds.slice(0, batchSize).join(","),
@@ -275,11 +288,15 @@ export class AceStepClient implements EngineClient {
     // element — pick this take's own entry by position.
     const seedList = (el.seed_value ?? "").split(",").map((s) => s.trim());
     const seed = str(seedList[index] ?? seedList[0]);
+    // LM-written text can carry token artifacts (observed live in Simple
+    // Mode generation results, not just plan endpoints) — strip everywhere.
+    const cleanStr = (v: string | null): string | null =>
+      v === null ? null : stripLmArtifacts(v);
     return {
       fileUrl: el.file ?? "",
       fileExt,
-      finalPrompt: str(el.prompt),
-      finalLyrics: str(el.lyrics),
+      finalPrompt: cleanStr(str(el.prompt)),
+      finalLyrics: cleanStr(str(el.lyrics)),
       bpm: num(metas.bpm),
       durationS: num(metas.duration),
       keyScale: str(metas.keyscale),

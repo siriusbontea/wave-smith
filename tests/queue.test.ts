@@ -98,6 +98,28 @@ describe("Queue (mock engine)", () => {
     expect(generateSpy.mock.calls[0]![0].lyrics).toBe("[inst]");
   });
 
+  it("vocal forge with NO lyrics uses engine Simple Mode and stores LM lyrics", async () => {
+    // Empty lyrics + instrumental OFF must NOT render an instrumental: the
+    // engine treats empty lyrics as instrumental, so the queue requests
+    // Simple Mode (the LM writes the lyrics). This was the M3 review blocker.
+    const generateSpy = vi.spyOn(engine, "generate");
+    const jobId = queue.enqueue("generate", payload({ lyrics: "", variations: 1 }));
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe("succeeded");
+    expect(generateSpy.mock.calls[0]![0].simpleMode).toBe(true);
+    const { songIds } = JSON.parse(job.result!) as { songIds: string[] };
+    const song = db.select().from(schema.songs).where(eq(schema.songs.id, songIds[0]!)).get()!;
+    expect(song.lyrics).toBeTruthy(); // LM-written, not null/empty
+    expect(song.lyrics).toContain("[verse]");
+  });
+
+  it("vocal forge WITH lyrics does not use Simple Mode", async () => {
+    const generateSpy = vi.spyOn(engine, "generate");
+    const jobId = queue.enqueue("generate", payload({ variations: 1 }));
+    await waitForJob(jobId);
+    expect(generateSpy.mock.calls[0]![0].simpleMode).toBe(false);
+  });
+
   it("vocal forge sends user lyrics to the engine byte-verbatim (DoD #5 contract)", async () => {
     const generateSpy = vi.spyOn(engine, "generate");
     const lyrics = "[verse]\nExplicit or not, exactly as typed\n[chorus]\nVerbatim!";

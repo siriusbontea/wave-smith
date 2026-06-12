@@ -71,12 +71,20 @@ export class MockEngineClient implements EngineClient {
       return { state: "failed", progress: 0.5, stage: "failed", takes: [], error: "Mock generation failed" };
     }
     const batch = Math.max(1, Math.min(4, task.req.batchSize));
+    // Mirror the real engine's Simple-Mode semantics: the LM invents lyrics
+    // when simpleMode is set; otherwise lyrics echo verbatim (and empty
+    // lyrics would mean instrumental — tests rely on this distinction).
+    const finalLyrics = task.req.simpleMode
+      ? "[verse]\nMock LM-written verse about " +
+        task.req.prompt.slice(0, 30) +
+        "\n[chorus]\nMock LM-written chorus"
+      : task.req.lyrics;
     const takes: EngineTake[] = Array.from({ length: batch }, (_, i) => ({
       fileUrl: `/mock/audio/${taskId}/${i}`,
       fileExt: "mp3", // the bundled demo clip is mp3
 
       finalPrompt: `${task.req.prompt} (mock enhanced caption)`,
-      finalLyrics: task.req.lyrics,
+      finalLyrics,
       bpm: 100,
       durationS: 10,
       keyScale: "C major",
