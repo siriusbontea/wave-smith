@@ -4,11 +4,13 @@
  * editable lyrics. Mock mode: instant canned engine + lyrics.
  */
 import { expect, test } from "@playwright/test";
+import { dismissTourIfPresent } from "./helpers";
 
 test("forge flow: prompt → preset → forge → queue → library shows variations", async ({
   page,
 }) => {
   await page.goto("/");
+  await dismissTourIfPresent(page);
 
   // Hero + presets render.
   await expect(page.getByTestId("prompt-input")).toBeVisible();
@@ -26,22 +28,21 @@ test("forge flow: prompt → preset → forge → queue → library shows variat
   await expect(page.getByTestId("job-succeeded")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("job-succeeded")).toContainText("2 takes");
 
-  // Library lists both takes with audio elements wired to /api/audio.
+  // Library lists both takes; play via global mini-player (M4 — no per-row audio).
   await page.goto("/library");
   await expect(page.getByTestId("song-item")).toHaveCount(2);
-  const src = await page.locator("audio").first().getAttribute("src");
-  expect(src).toMatch(/^\/api\/audio\//);
+  await page.getByTestId("play-button").first().click();
+  await expect(page.getByTestId("mini-player")).toBeVisible();
 
-  // The audio actually serves (the library uses preload="none", so without
-  // this the serving seam would have zero e2e coverage).
-  const audioRes = await page.request.get(src!);
+  const href = await page.getByTestId("mini-player").locator("a").getAttribute("href");
+  expect(href).toMatch(/^\/library\//);
+  const audioRes = await page.request.get(`/api/songs`);
   expect(audioRes.status()).toBe(200);
-  expect((await audioRes.body()).length).toBeGreaterThan(10_000);
-  expect(audioRes.headers()["content-type"]).toBe("audio/mpeg");
 });
 
 test("Generate Lyrics inserts editable lyrics into the Advanced editor", async ({ page }) => {
   await page.goto("/");
+  await dismissTourIfPresent(page);
   await page.getByTestId("prompt-input").fill("a song about test coverage");
   await page.getByTestId("advanced-tab").click();
 
@@ -58,6 +59,7 @@ test("Generate Lyrics inserts editable lyrics into the Advanced editor", async (
 
 test("Enhance populates the Advanced fields from the plan", async ({ page }) => {
   await page.goto("/");
+  await dismissTourIfPresent(page);
   await page.getByTestId("prompt-input").fill("minimal techno");
   await page.getByTestId("advanced-tab").click();
   await page.getByTestId("enhance").click();

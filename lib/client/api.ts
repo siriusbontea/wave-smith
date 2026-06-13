@@ -11,7 +11,10 @@ export interface JobView {
   progress: number | null;
   stage: string | null;
   error: string | null;
-  result: { songIds: string[]; variationGroupId: string } | null;
+  result:
+    | { songIds: string[]; variationGroupId: string }
+    | { stemIds: string[]; songId: string }
+    | null;
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -39,6 +42,46 @@ export interface EnhanceView {
   timeSignature: string;
   durationS: number | null;
   vocalLanguage: string;
+}
+
+/** Song DTO returned by /api/songs — mirrors lib/songs/queries.SongDTO. */
+export interface SongView {
+  id: string;
+  title: string;
+  prompt: string;
+  lyrics: string | null;
+  tags: string[];
+  bpm: number | null;
+  keyScale: string | null;
+  timeSignature: string | null;
+  durationS: number | null;
+  seed: string | null;
+  model: string;
+  variationGroupId: string;
+  audioPath: string;
+  lrc: string | null;
+  qualityScore: number | null;
+  artSeed: string;
+  favorite: boolean;
+  createdAt: number;
+  stems?: StemView[];
+}
+
+export interface StemView {
+  id: string;
+  stemName: "vocals" | "drums" | "bass" | "other";
+  path: string;
+  createdAt: number;
+}
+
+export interface SongPatch {
+  title?: string;
+  lyrics?: string | null;
+  tags?: string[];
+  bpm?: number | null;
+  keyScale?: string | null;
+  timeSignature?: "2" | "3" | "4" | "6" | null;
+  favorite?: boolean;
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
@@ -113,4 +156,42 @@ export async function enhance(params: {
     body: JSON.stringify(params),
   });
   return jsonOrThrow<EnhanceView>(res);
+}
+
+export async function fetchSongs(): Promise<SongView[]> {
+  const res = await fetch("/api/songs", { cache: "no-store" });
+  return (await jsonOrThrow<{ songs: SongView[] }>(res)).songs;
+}
+
+export async function fetchSong(id: string): Promise<SongView> {
+  const res = await fetch(`/api/songs/${id}`, { cache: "no-store" });
+  return jsonOrThrow<SongView>(res);
+}
+
+export async function patchSong(id: string, patch: SongPatch): Promise<SongView> {
+  const res = await fetch(`/api/songs/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrThrow<SongView>(res);
+}
+
+export async function deleteSong(id: string): Promise<void> {
+  const res = await fetch(`/api/songs/${id}`, { method: "DELETE" });
+  await jsonOrThrow<{ deleted: string }>(res);
+}
+
+export async function importLibrary(json: unknown): Promise<{ imported: number; missingAudio: number }> {
+  const res = await fetch("/api/library/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(json),
+  });
+  return jsonOrThrow<{ imported: number; missingAudio: number }>(res);
+}
+
+export async function forgeStems(songId: string): Promise<{ jobId: string }> {
+  const res = await fetch(`/api/songs/${songId}/stems`, { method: "POST" });
+  return jsonOrThrow<{ jobId: string }>(res);
 }

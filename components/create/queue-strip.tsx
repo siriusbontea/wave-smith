@@ -39,10 +39,14 @@ export function QueueStrip() {
       if (ACTIVE.has(job.status) || announcedRef.current.has(job.id)) continue;
       announcedRef.current.add(job.id);
       if (job.status === "succeeded") {
-        const count = job.result?.songIds.length ?? 0;
-        toast.success(`Forged ${count} ${count === 1 ? "take" : "takes"}`, {
-          action: { label: "Open in Library", onClick: () => (window.location.href = "/library") },
-        });
+        if (job.type === "generate" && job.result && "songIds" in job.result) {
+          const count = job.result.songIds.length;
+          toast.success(`Forged ${count} ${count === 1 ? "take" : "takes"}`, {
+            action: { label: "Open in Library", onClick: () => (window.location.href = "/library") },
+          });
+        } else if (job.type === "stems") {
+          toast.success("Stems ready");
+        }
       } else {
         toast.error("Forge failed", { description: job.error ?? undefined });
       }
@@ -97,14 +101,17 @@ function JobRow({ job, queuePosition }: { job: JobView; queuePosition: number })
           </div>
         </div>
       )}
-      {job.status === "succeeded" && (
+      {job.status === "succeeded" && job.type === "generate" && job.result && "songIds" in job.result && (
         <span>
-          Done — {job.result?.songIds.length ?? 0}{" "}
-          {(job.result?.songIds.length ?? 0) === 1 ? "take" : "takes"}.{" "}
+          Done — {job.result.songIds.length}{" "}
+          {job.result.songIds.length === 1 ? "take" : "takes"}.{" "}
           <Link href="/library" className="underline underline-offset-2">
             Open in Library
           </Link>
         </span>
+      )}
+      {job.status === "succeeded" && job.type === "stems" && (
+        <span>Stems separated — open the song to download.</span>
       )}
       {job.status === "failed" && (
         <span className="text-destructive">{job.error ?? "Forge failed"}</span>
