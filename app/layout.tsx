@@ -20,6 +20,9 @@ export const metadata: Metadata = {
 import Link from "next/link";
 import { Providers } from "@/components/providers";
 import { StatusBanner } from "@/components/status-banner";
+import { MiniPlayer } from "@/components/mini-player";
+import { KeyboardPlayer } from "@/components/keyboard-player";
+import { OnboardingTour } from "@/components/onboarding-tour";
 
 export default function RootLayout({
   children,
@@ -42,9 +45,15 @@ export default function RootLayout({
               <Link href="/library" className="text-muted-foreground hover:text-foreground">
                 Library
               </Link>
+              <Link href="/settings" className="text-muted-foreground hover:text-foreground">
+                Settings
+              </Link>
             </nav>
           </header>
-          {children}
+          <div className="flex flex-1 flex-col">{children}</div>
+          <MiniPlayer />
+          <KeyboardPlayer />
+          <OnboardingTour />
         </Providers>
       </body>
     </html>
