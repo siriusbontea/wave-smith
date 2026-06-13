@@ -1,0 +1,10 @@
+---
+description: Point agents to AGENTS.md — canonical repo instructions for Cursor and Grok Build
+alwaysApply: true
+---
+
+# Project instructions
+
+Read and follow **[AGENTS.md](../../AGENTS.md)** at the repo root before making changes.
+
+It covers architecture locks, commands, verification gates, authorship, and what not to do. `CLAUDE.md` is only a legacy pointer.

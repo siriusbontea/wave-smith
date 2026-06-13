@@ -76,7 +76,12 @@ function clampInt(raw: string | number, min: number, max: number): number | unde
 
 export function CreateForm() {
   const queryClient = useQueryClient();
-  const { data: health } = useQuery({ queryKey: ["health"], queryFn: fetchHealth, refetchInterval: 3000 });
+  const { data: health, isError: healthError } = useQuery({
+    queryKey: ["health"],
+    queryFn: fetchHealth,
+    refetchInterval: 3000,
+    retry: 2,
+  });
 
   // Shared form state (both tabs read/write the same forge payload).
   const [prompt, setPrompt] = useState("");
@@ -155,7 +160,7 @@ export function CreateForm() {
     return params;
   }
 
-  const canForge = prompt.trim().length > 0 && !forgeMutation.isPending;
+  const canForge = prompt.trim().length > 0 && !forgeMutation.isPending && !healthError;
   const lyricsAvailable = health?.lyrics.available ?? false;
   // Enhance needs the engine LM specifically — a "ready" engine whose LM init
   // failed would 503 forever (ENGINE_NOTES §2: LM init is never retried).
@@ -395,6 +400,12 @@ export function CreateForm() {
       </Tabs>
 
       {/* Forge */}
+      {healthError && (
+        <p className="text-center text-sm text-destructive" data-testid="app-unreachable">
+          Cannot reach the Wavesmith API — run <code className="rounded bg-muted px-1">./scripts/dev.sh</code>{" "}
+          and open <code className="rounded bg-muted px-1">http://127.0.0.1:3000</code>.
+        </p>
+      )}
       <Button
         size="lg"
         data-testid="forge"

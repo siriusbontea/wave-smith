@@ -93,6 +93,12 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
     // ("bpm: expected number to be <=300", not just "Invalid request").
     const issue = body?.issues?.[0];
     const detail = issue ? `${issue.path.join(".")}: ${issue.message}` : body?.error;
+    if (res.status === 404) {
+      throw new Error(
+        detail ??
+          "Wavesmith API not found — the app server may not be running. Start it with scripts/dev.sh (or pnpm dev).",
+      );
+    }
     throw new Error(detail ?? `Request failed (${res.status})`);
   }
   return body as T;

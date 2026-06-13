@@ -2,7 +2,8 @@
   "name": "wavesmith",
   "version": "0.1.0",
   "private": true,
-  "license": "MIT",
+  "author": "Sirius T.Bontea <sirius.bontea@protonmail.com>",
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "next dev",
     "build": "next build",

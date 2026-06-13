@@ -23,7 +23,7 @@ These rules govern how you work. They override habit.
 
 ## 1. Product
 
-**Wavesmith** is a local-first, open-source AI music studio: a Suno-style workflow — describe a song, get full tracks with vocals, build a library, pull stems — running 100% on the user's machine. No accounts, no cloud, no telemetry. MIT licensed.
+**Wavesmith** is a local-first, open-source AI music studio: a Suno-style workflow — describe a song, get full tracks with vocals, build a library, pull stems — running 100% on the user's machine. No accounts, no cloud, no telemetry. **GPL-3.0-or-later** licensed.
 
 Design feel: dark, modern music-studio aesthetic. Intuitive first, powerful second — a new user should produce a song within a minute of the app being ready, without reading docs.
 
@@ -108,10 +108,11 @@ wavesmith/
 │   ├── DECISIONS.md          # every judgment call, one line each
 │   ├── ESCAPE_HATCHES.md     # anything stubbed + how to finish it
 │   └── LINUX_CUDA.md         # documented-not-tested Linux path (§11)
-├── CLAUDE.md                 # conventions + commands for future agent sessions
+├── AGENTS.md                 # agent instructions (Cursor, Grok Build)
+├── CLAUDE.md                 # legacy pointer → AGENTS.md
 ├── README.md
 ├── .env.example              # every var commented
-└── LICENSE                   # MIT
+└── LICENSE                   # GPL-3.0-or-later
 ```
 
 ---
@@ -308,7 +309,7 @@ Write `docs/LINUX_CUDA.md`: manual steps for Linux + NVIDIA (engine via its CUDA
 **M6 — Settings, onboarding, polish.** Settings page, tour, tooltips, empty states, skeletons, a11y + keyboard pass, responsive check.
 *Gate: keyboard space-toggle works with focus guard; tour shows once and is skippable.*
 
-**M7 — Hardening + docs.** Full test suite, `smoke.sh` against the real engine, README accuracy pass (measured numbers only), `CLAUDE.md` (architecture summary, commands, conventions), LINUX_CUDA.md, MIT LICENSE, upstream responsible-use note in README, final commit.
+**M7 — Hardening + docs.** Full test suite, `smoke.sh` against the real engine, README accuracy pass (measured numbers only), `CLAUDE.md` (architecture summary, commands, conventions), LINUX_CUDA.md, GPL-3.0 LICENSE, upstream responsible-use note in README, final commit.
 *Gate: Definition of Done (below) is fully checked.*
 
 ### Definition of Done

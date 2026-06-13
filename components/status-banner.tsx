@@ -10,10 +10,11 @@ import { useEffect, useState } from "react";
 import { fetchHealth } from "@/lib/client/api";
 
 export function StatusBanner() {
-  const { data } = useQuery({
+  const { data, isError, isLoading } = useQuery({
     queryKey: ["health"],
     queryFn: fetchHealth,
     refetchInterval: 3000,
+    retry: 2,
   });
   const state = data?.engine.state;
 
@@ -33,7 +34,18 @@ export function StatusBanner() {
     };
   }, [state]);
 
-  if (!data || state === "ready") return null;
+  if (isError) {
+    return (
+      <div role="status" className="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm">
+        <span className="font-medium">Wavesmith app not reachable.</span> The API returned an error
+        (often because only the engine is running, or the dev server stopped). Run{" "}
+        <code className="rounded bg-muted px-1 py-0.5">./scripts/dev.sh</code> and open{" "}
+        <code className="rounded bg-muted px-1 py-0.5">http://127.0.0.1:3000</code>.
+      </div>
+    );
+  }
+
+  if (isLoading || !data || state === "ready") return null;
 
   if (state === "offline") {
     return (

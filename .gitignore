@@ -24,3 +24,8 @@ node_modules/
 # Next.js / TypeScript build artifacts
 *.tsbuildinfo
 next-env.d.ts
+
+# Test output
+/test-results/
+/playwright-report/
+/blob-report/

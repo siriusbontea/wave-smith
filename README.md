@@ -1,66 +1,304 @@
 # Wavesmith
 
-Local-first AI music studio — describe a song, get full tracks with vocals, build a library, pull stems. Runs on your machine. No accounts, no cloud, no telemetry.
+**Local-first AI music studio** — describe a song, get full tracks with vocals, build a library, pull stems. Inspired by Suno-style workflows, but everything runs on your machine: no accounts, no cloud API, no telemetry.
 
-**Verified platform:** macOS on Apple Silicon (M2 class, 32 GB RAM). Linux/CUDA is [documented but untested](docs/LINUX_CUDA.md).
+| | |
+|---|---|
+| **Verified platform** | macOS on Apple Silicon (M-series, 32 GB RAM tested) |
+| **License** | GNU GPL v3.0 ([LICENSE](LICENSE)) |
+| **Music engine** | [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) (separate upstream project, MIT), pinned v0.1.8 |
+| **Linux / NVIDIA** | [Documented only](docs/LINUX_CUDA.md) — not tested in this repo |
 
-## Quickstart
+---
+
+## What you get
+
+- **Create** — natural-language prompts, 6 presets, Simple/Advanced tabs, 1–4 variations per forge
+- **Library** — grid/list, procedural cover art, favorites, search, export/import (JSON metadata)
+- **Playback** — one global player + waveform; seeking works (HTTP Range support)
+- **Stems** — Demucs separation → vocals / drums / bass / other + ZIP download
+- **Settings** — engine health, storage stats, theme, optional test generation
+
+Optional **Generate Lyrics** uses a local [Ollama](https://ollama.com) model. If Ollama is not installed, that button hides and everything else still works.
+
+---
+
+## Requirements
+
+### Hardware (recommended)
+
+- **Apple Silicon Mac** (M1/M2/M3 class)
+- **32 GB RAM** — engine weights (~10 GB on disk) plus runtime memory; 16 GB may work but is tight if you also run a large lyrics model concurrently
+- **~25 GB free disk** after clone:
+  - ~10 GB model weights (one-time download)
+  - ~1.2 GB Python venv (engine)
+  - ~1 GB Node dependencies
+  - Generated audio grows under `./data/`
+
+### Software (setup installs or checks these)
+
+| Tool | Purpose |
+|------|---------|
+| [Homebrew](https://brew.sh) | Package manager on macOS |
+| **Node.js** 22+ (26 verified) | Next.js app |
+| **pnpm** | Node dependencies |
+| **uv** | Python tooling for engine + Demucs |
+| **ffmpeg** | MP3 encoding, media tooling |
+| **Python 3.12** | Used by uv for Demucs install |
+| **git** | Clone engine + this repo |
+
+---
+
+## What's in the repo vs what setup downloads
+
+**Included in git:**
+
+- Wavesmith app (Next.js 16, React 19, SQLite library)
+- Scripts, tests, docs, `public/demo-clip.mp3` (mock/demo audio)
+- `.env.example` — copy to `.env` on first setup
+
+**Not in git** (created by `scripts/setup.sh` on your machine):
+
+| Path | Size (approx.) | What it is |
+|------|----------------|------------|
+| `engine/ACE-Step-1.5/` | ~1.2 GB venv + ~10 GB weights | Pinned ACE-Step clone + models |
+| `data/` | grows with use | SQLite DB + generated WAV/MP3/stems |
+| `node_modules/` | ~hundreds of MB | App dependencies |
+| `.env` | tiny | Your local config (never commit) |
+
+---
+
+## Quickstart (new users)
+
+### 1. Clone
 
 ```bash
-./scripts/setup.sh   # once: toolchain, engine, models, demucs, pnpm install
-./scripts/dev.sh     # engine + Next.js on http://127.0.0.1:3000
+git clone <your-repo-url> wavesmith
+cd wavesmith
 ```
 
-**Honest timing (measured on this machine, see `docs/ENGINE_NOTES.md`):**
-
-- Minutes to a running app after setup (model weights are ~10 GB — downloaded once).
-- First engine warm-up: ~44 s cold boot.
-- Generation: ~22.4 s per 30 s song when forging 2 variations (batch).
-- Stem separation (Demucs on CPU): a few minutes per song — the UI says so.
-
-Tour the UI without the engine: set `MOCK_ENGINE=1` in `.env`.
-
-## What you can do
-
-1. **Create** — describe a song (Simple or Advanced), optional lyrics via Ollama, Forge 1–4 variations.
-2. **Library** — grid/list, procedural cover art, favorites, search, export/import JSON metadata.
-3. **Play** — single global player + waveform; seek works (HTTP Range on `/api/audio`).
-4. **Stems** — Demucs `htdemucs` → vocals / drums / bass / other + ZIP download.
-5. **Settings** — engine health, storage paths, theme, test generation.
-
-## Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `scripts/setup.sh` | Idempotent environment setup |
-| `scripts/dev.sh` | Engine + `next dev` with prefixed logs |
-| `scripts/start.sh` | Production build + start |
-| `scripts/smoke.sh` | E2E against the **real** engine (M7 gate) |
-
-## Tests
+### 2. One-time setup
 
 ```bash
-MOCK_ENGINE=1 pnpm test          # Vitest — no GPU
-MOCK_ENGINE=1 pnpm test:e2e      # Playwright smoke
+chmod +x scripts/*.sh
+./scripts/setup.sh
 ```
 
-## Architecture
+This is **idempotent** — safe to re-run. It will:
 
-- **Next.js 16** — UI + API route handlers + in-process job queue + SQLite (Drizzle).
-- **ACE-Step 1.5** — music engine via REST (`engine/ACE-Step-1.5`, pinned v0.1.8).
-- **Ollama (optional)** — uncensored lyrics LLM; degrades gracefully when absent.
-- **Demucs** — stem separation (variant-independent; turbo model stays loaded).
+1. Check Homebrew, Node, pnpm, uv, ffmpeg
+2. Copy `.env.example` → `.env` if missing
+3. Clone ACE-Step 1.5 at tag **v0.1.8** into `engine/ACE-Step-1.5`
+4. Run `uv sync` for engine Python deps
+5. Download model weights (~**10 GB**, the long step on first run)
+6. Install **Demucs** (stems) via `uv tool install`
+7. `pnpm install` + database migrate
 
-See `CLAUDE.md` and `docs/ENGINE_NOTES.md` for agent/human conventions and the verified engine contract.
+**Expect:** tens of minutes on first setup, mostly the model download.
+
+### 3. Start Wavesmith
+
+```bash
+./scripts/dev.sh
+```
+
+This starts **two processes**:
+
+| Process | URL | Role |
+|---------|-----|------|
+| ACE-Step engine | `http://127.0.0.1:8001` | Music generation (GPU/MLX) |
+| Wavesmith app | **`http://127.0.0.1:3000`** | UI + API — **open this in your browser** |
+
+> **Important:** The UI lives on port **3000**, not 8001. If you only start the engine, the browser will show API errors (404) when you click Forge.
+
+First engine warm-up after boot takes about **45 seconds** with weights already on disk. The status banner at the top explains offline / starting / ready states.
+
+### 4. Forge a song
+
+1. Open **http://127.0.0.1:3000**
+2. Enter a prompt (or click a preset)
+3. Click **Forge** (default: 2 variations)
+4. Watch the queue strip; when done, open **Library** to play
+
+**Measured on M2 Max / 32 GB / macOS** (see `docs/ENGINE_NOTES.md`):
+
+- ~22 s per 30 s song when forging 2 variations (batch)
+- Stem separation (Demucs, CPU): a few minutes per song
+
+---
+
+## Optional: AI lyric writing (Ollama)
+
+The built-in engine planner can write lyrics in Simple mode. For richer, editable lyrics in Advanced mode:
+
+```bash
+brew install ollama
+ollama serve          # or launch the Ollama app
+ollama pull dolphin3:8b   # ~5 GB; or use a model you already have
+```
+
+Set your model in `.env` if needed:
+
+```bash
+LYRICS_MODEL=dolphin3:8b
+```
+
+Wavesmith applies **no content filtering** to user-supplied lyrics — same as any local DAW.
+
+---
+
+## Demo mode (no engine, no GPU)
+
+Tour the UI without installing ACE-Step or downloading weights:
+
+```bash
+# In .env:
+MOCK_ENGINE=1
+
+pnpm install   # if you skipped full setup
+pnpm dev --hostname 127.0.0.1 --port 3000
+```
+
+Forge completes instantly using the bundled `public/demo-clip.mp3`.
+
+---
+
+## Production run
+
+```bash
+./scripts/start.sh   # pnpm build + engine + next start
+```
+
+Same URLs: app on **3000**, engine on **8001**.
+
+---
+
+## Troubleshooting
+
+### `Request failed (404)` when clicking Forge
+
+The **Next.js app is not running** (or you're on the wrong port). Run `./scripts/dev.sh` and use **http://127.0.0.1:3000**.
+
+### Banner says "Engine offline"
+
+Start both processes with `./scripts/dev.sh`, not the engine alone. Check engine logs prefixed with `[engine]`.
+
+### Banner says "Engine starting…" for a long time
+
+First run downloads and loads several GB of weights — normal once. Subsequent warm-ups are ~45 s.
+
+### Model download stalls
+
+See the direct-download fallback note in `docs/DECISIONS.md`. Re-run `./scripts/setup.sh` after fixing network/disk space.
+
+### Stems button fails
+
+Ensure Demucs installed: `demucs --help`. Re-run setup step or:
+
+```bash
+uv tool install --python 3.12 --with "torchaudio<2.9" demucs==4.0.1
+```
+
+### `pnpm test` / CI
+
+Tests use the mock engine — no GPU or ACE-Step required:
+
+```bash
+MOCK_ENGINE=1 pnpm test
+MOCK_ENGINE=1 pnpm test:e2e
+```
+
+### Real-engine smoke test
+
+With engine running and weights loaded:
+
+```bash
+./scripts/smoke.sh
+```
+
+---
+
+## Scripts reference
+
+| Script | When to use |
+|--------|-------------|
+| `scripts/setup.sh` | First time + after pulling updates that change engine pin |
+| `scripts/dev.sh` | Daily development (engine + hot-reload app) |
+| `scripts/start.sh` | Production-style local run |
+| `scripts/smoke.sh` | Verify full pipeline against real engine |
+
+---
+
+## Configuration
+
+All variables are documented in [`.env.example`](.env.example). Common ones:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `PORT` | `3000` | App URL port |
+| `ENGINE_URL` | `http://127.0.0.1:8001` | ACE-Step REST API |
+| `DATA_DIR` | `./data` | Library DB + audio |
+| `MOCK_ENGINE` | `0` | Set `1` for demo mode |
+| `LYRICS_MODEL` | `dolphin3:8b` | Ollama tag for Generate Lyrics |
+
+---
+
+## Architecture (short)
+
+```
+Browser  →  Wavesmith (Next.js @ :3000)  →  ACE-Step REST API (@ :8001)
+                ├── SQLite (library, jobs)
+                ├── ./data/audio
+                ├── Demucs CLI (stems)
+                └── Ollama (optional lyrics)
+```
+
+- One in-process job queue (concurrency 1 toward the engine)
+- `EngineClient` + `MockEngineClient` seam — tests never need a GPU
+- Audio served with HTTP **Range** support (seeking depends on it)
+
+Deep dives: [`AGENTS.md`](AGENTS.md), [`docs/ENGINE_NOTES.md`](docs/ENGINE_NOTES.md), [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+---
+
+## Development
+
+```bash
+pnpm typecheck
+pnpm lint
+MOCK_ENGINE=1 pnpm test
+MOCK_ENGINE=1 pnpm test:e2e
+```
+
+Milestone build spec (historical): [`wavesmith-claude-code-spec.md`](wavesmith-claude-code-spec.md).
+
+---
 
 ## Responsible use
 
-Wavesmith wraps [ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5) (MIT). Use generated music responsibly; respect copyright and likeness rights. The app applies **no content filtering** to user-supplied lyrics — that is intentional for a local DAW-style tool.
+Wavesmith wraps open-source models for **local, personal** music creation. You are responsible for how you use generated audio — respect copyright, likeness rights, and platform policies. [ACE-Step](https://github.com/ace-step/ACE-Step-1.5) includes its own responsible-use guidance upstream.
 
-## Roadmap (post-MVP)
+If you distribute modified versions of Wavesmith, the GPL v3 requires you to provide corresponding source and preserve license notices.
 
-Cover/Repaint/Extend (needs `base` variant), engine-native stems, LoRA UI, voice-to-prompt, SSE job updates, Tauri desktop wrap — see spec §14 in `wavesmith-claude-code-spec.md`.
+---
+
+## Roadmap
+
+Post-MVP ideas (not built here): Cover/Repaint/Extend, engine-native stems, LoRA UI, voice-to-prompt, SSE job updates, Tauri desktop wrap — see spec §14 in `wavesmith-claude-code-spec.md`.
+
+---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**Wavesmith** is free software licensed under the [GNU General Public License v3.0](LICENSE) (or later, at your option).
+
+Copyright © 2026 Sirius T.Bontea <sirius.bontea@protonmail.com>.
+
+**Author:** Sirius T.Bontea <sirius.bontea@protonmail.com>
+
+For git commits in this repo, use that name and email as the author. Do not add AI co-author trailers.
+
+### Third-party components
+
+- **[ACE-Step 1.5](https://github.com/ace-step/ACE-Step-1.5)** — music engine (MIT; cloned at setup, not vendored in git). Wavesmith communicates with it as a separate process.
+- Other dependencies — see `package.json` and `pnpm-lock.yaml`; each package retains its own license.
