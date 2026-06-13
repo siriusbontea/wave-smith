@@ -292,11 +292,11 @@ Post-MVP ideas (not built here): Cover/Repaint/Extend, engine-native stems, LoRA
 
 **Wavesmith** is free software licensed under the [GNU General Public License v3.0](LICENSE) (or later, at your option).
 
-Copyright © 2026 Sirius T.Bontea <sirius.bontea@protonmail.com>.
+Copyright © 2026 Sirius T.Bontea.
 
-**Author:** Sirius T.Bontea <sirius.bontea@protonmail.com>
+**Author:** Sirius T.Bontea
 
-For git commits in this repo, use that name and email as the author. Do not add AI co-author trailers.
+For git commits in this repo, use the author identity documented in `AGENTS.md`. Do not add AI co-author trailers.
 
 ### Third-party components
 
