@@ -29,6 +29,8 @@ import {
   type GenerateRequest,
 } from "@/lib/engine/types";
 import { env } from "@/lib/env";
+import { separateStems } from "@/lib/audio/demucs";
+import { getSong, songAudioAbsPath } from "@/lib/songs/queries";
 
 /** Payload of a "generate" job (validated by the /api/generate zod schema). */
 export interface GenerateJobPayload {
@@ -43,6 +45,11 @@ export interface GenerateJobPayload {
   variations: number;
   /** Optional user seed — take i uses seed+i for reproducible variation sets. */
   seed?: number;
+}
+
+/** Payload of a "stems" job — separate one song into four tracks. */
+export interface StemsJobPayload {
+  songId: string;
 }
 
 export interface QueueOptions {
@@ -83,7 +90,9 @@ export class Queue {
     this.ensureWorker();
   }
 
-  enqueue(type: "generate", payload: GenerateJobPayload): string {
+  enqueue(type: "generate", payload: GenerateJobPayload): string;
+  enqueue(type: "stems", payload: StemsJobPayload): string;
+  enqueue(type: "generate" | "stems", payload: GenerateJobPayload | StemsJobPayload): string {
     const id = crypto.randomUUID();
     db.insert(schema.jobs)
       .values({
@@ -91,6 +100,7 @@ export class Queue {
         type,
         status: "queued",
         payload: JSON.stringify(payload),
+        songId: type === "stems" ? (payload as StemsJobPayload).songId : null,
         createdAt: Date.now(),
       })
       .run();
@@ -139,8 +149,9 @@ export class Queue {
     try {
       if (job.type === "generate") {
         await this.runGenerate(job.id, JSON.parse(job.payload) as GenerateJobPayload);
+      } else if (job.type === "stems") {
+        await this.runStems(job.id, JSON.parse(job.payload) as StemsJobPayload);
       } else {
-        // "stems" lands in M5; failing loudly beats silently dropping the job.
         throw new Error(`Unsupported job type: ${job.type}`);
       }
     } catch (err) {
@@ -295,6 +306,51 @@ export class Queue {
         progress: 1,
         result: JSON.stringify({ songIds, variationGroupId }),
         songId: songIds[0] ?? null,
+        finishedAt: Date.now(),
+      })
+      .where(eq(schema.jobs.id, jobId))
+      .run();
+  }
+
+  private async runStems(jobId: string, payload: StemsJobPayload): Promise<void> {
+    const song = getSong(payload.songId);
+    if (!song) throw new Error("Song not found — it may have been deleted.");
+    const masterAbs = songAudioAbsPath(song);
+    if (!masterAbs || !fs.existsSync(masterAbs)) {
+      throw new Error("Master audio missing on disk — cannot separate stems.");
+    }
+
+    // Replace any prior stems for this song (re-run is allowed).
+    db.delete(schema.stems).where(eq(schema.stems.songId, payload.songId)).run();
+
+    const stemAbs = await separateStems(masterAbs, payload.songId, (fraction, stage) => {
+      db.update(schema.jobs).set({ progress: fraction }).where(eq(schema.jobs.id, jobId)).run();
+      this.stages.set(jobId, stage);
+    });
+
+    const stemIds: string[] = [];
+    const now = Date.now();
+    for (const [stemName, absPath] of Object.entries(stemAbs)) {
+      const id = crypto.randomUUID();
+      const relPath = path.relative(env.audioDir, absPath);
+      db.insert(schema.stems)
+        .values({
+          id,
+          songId: payload.songId,
+          stemName: stemName as "vocals" | "drums" | "bass" | "other",
+          path: relPath,
+          createdAt: now,
+        })
+        .run();
+      stemIds.push(id);
+    }
+
+    db.update(schema.jobs)
+      .set({
+        status: "succeeded",
+        progress: 1,
+        result: JSON.stringify({ stemIds, songId: payload.songId }),
+        songId: payload.songId,
         finishedAt: Date.now(),
       })
       .where(eq(schema.jobs.id, jobId))

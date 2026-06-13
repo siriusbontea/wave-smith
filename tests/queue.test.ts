@@ -4,6 +4,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { db, schema } from "@/lib/db";
@@ -275,11 +276,30 @@ describe("Queue (mock engine)", () => {
     expect(job.status).toBe("succeeded");
   });
 
-  it("fails unsupported job types loudly", async () => {
-    const jobId = queue.enqueue("stems" as never, payload());
+  it("runs stems jobs when the song exists (mock demucs)", async () => {
+    const songId = crypto.randomUUID();
+    const rel = path.join(songId, "take.mp3");
+    const abs = path.join(env.audioDir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.copyFileSync(path.resolve("public/demo-clip.mp3"), abs);
+    db.insert(schema.songs)
+      .values({
+        id: songId,
+        title: "Stems test",
+        prompt: "x",
+        tags: "[]",
+        model: "mock",
+        variationGroupId: songId,
+        audioPath: rel,
+        artSeed: "x",
+        createdAt: Date.now(),
+      })
+      .run();
+    const jobId = queue.enqueue("stems", { songId });
     const job = await waitForJob(jobId);
-    expect(job.status).toBe("failed");
-    expect(job.error).toContain("Unsupported job type");
+    expect(job.status).toBe("succeeded");
+    const stems = db.select().from(schema.stems).where(eq(schema.stems.songId, songId)).all();
+    expect(stems).toHaveLength(4);
   });
 });
 
