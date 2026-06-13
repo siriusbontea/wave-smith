@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-This repo currently contains only `wavesmith-claude-code-spec.md` — the authoritative one-shot build specification. The application has **not been built yet**. When implementing, follow the milestone order and verification gates in §12 of the spec; that document overrides habit where they conflict. Build real files and run real commands — never deliver code in chat.
+Milestones **M0–M3** are committed; **M4–M7** work continues on `master`. The app runs end-to-end in mock mode (`MOCK_ENGINE=1`) and against the real ACE-Step engine on this machine. Follow `wavesmith-claude-code-spec.md` §12 for remaining gates; that document overrides habit where they conflict.
 
 ## What Wavesmith is
 
