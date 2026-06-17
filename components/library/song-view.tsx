@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Pause, Play, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CoverArt } from "@/components/cover-art";
 import { Waveform } from "@/components/waveform";
@@ -21,22 +21,30 @@ import {
   deleteSong,
   fetchJobs,
   fetchSong,
+  forgeMidi,
   forgeStems,
+  isAbortError,
   patchSong,
+  type MidiView,
   type SongView,
 } from "@/lib/client/api";
 import { usePlayer } from "@/lib/audio/store";
 import { formatDate, formatTime } from "@/lib/format";
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
+const MIDI_SOURCES = ["master", "vocals", "drums", "bass", "other"] as const;
+type MidiSource = (typeof MIDI_SOURCES)[number];
 
 export function SongView({ id }: { id: string }) {
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { data: song, isLoading } = useQuery({ queryKey: ["song", id], queryFn: () => fetchSong(id) });
+  const { data: song, isLoading } = useQuery({
+    queryKey: ["song", id],
+    queryFn: ({ signal }) => fetchSong(id, signal),
+  });
   const { data: jobs } = useQuery({
     queryKey: ["jobs"],
-    queryFn: fetchJobs,
+    queryFn: ({ signal }) => fetchJobs(signal),
     refetchInterval: (q) => {
       const active = q.state.data?.some((j) => j.status === "queued" || j.status === "running");
       return active ? 1000 : false;
@@ -49,6 +57,7 @@ export function SongView({ id }: { id: string }) {
   const [bpm, setBpm] = useState("");
   const [keyScale, setKeyScale] = useState("");
   const [timeSig, setTimeSig] = useState<string>("");
+  const [midiSource, setMidiSource] = useState<MidiSource>("master");
 
   useEffect(() => {
     if (!song) return;
@@ -106,33 +115,72 @@ export function SongView({ id }: { id: string }) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast.success("Stem separation queued", {
-        description: "This may take a few minutes on CPU.",
+        description: "This may take a few minutes on CPU. Playback can continue.",
       });
     },
-    onError: (err) => toast.error("Could not start stems", { description: err.message }),
+    onError: (err) => {
+      if (isAbortError(err)) return;
+      toast.error("Could not start stems", { description: err.message });
+    },
   });
 
   const stemsJob = jobs?.find(
     (j) =>
       j.type === "stems" &&
-      j.result &&
-      "songId" in j.result &&
-      j.result.songId === id &&
+      j.songId === id &&
       (j.status === "queued" || j.status === "running"),
   );
   const stemsReady = (song?.stems?.length ?? 0) === 4;
 
+  const refreshedStemsJobRef = useRef<string | null>(null);
   useEffect(() => {
-    const succeeded = jobs?.some(
+    const done = jobs?.find(
       (j) =>
         j.type === "stems" &&
         j.status === "succeeded" &&
-        j.result &&
-        "songId" in j.result &&
-        j.result.songId === id,
+        j.songId === id,
     );
-    if (succeeded) void queryClient.invalidateQueries({ queryKey: ["song", id] });
+    if (!done || refreshedStemsJobRef.current === done.id) return;
+    refreshedStemsJobRef.current = done.id;
+    void queryClient.invalidateQueries({ queryKey: ["song", id] });
   }, [jobs, id, queryClient]);
+
+  const midiMutation = useMutation({
+    mutationFn: (source: MidiSource) => forgeMidi(id, source),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      toast.success("MIDI transcription queued", {
+        description: "Approximate notes via Basic Pitch — CPU only, playback can continue.",
+      });
+    },
+    onError: (err) => {
+      if (isAbortError(err)) return;
+      toast.error("Could not start MIDI", { description: err.message });
+    },
+  });
+
+  const midiJob = jobs?.find(
+    (j) =>
+      j.type === "midi" &&
+      j.songId === id &&
+      j.midiSource === midiSource &&
+      (j.status === "queued" || j.status === "running"),
+  );
+
+  const refreshedMidiJobRef = useRef<string | null>(null);
+  useEffect(() => {
+    const done = jobs?.find(
+      (j) => j.type === "midi" && j.status === "succeeded" && j.songId === id,
+    );
+    if (!done || refreshedMidiJobRef.current === done.id) return;
+    refreshedMidiJobRef.current = done.id;
+    void queryClient.invalidateQueries({ queryKey: ["song", id] });
+  }, [jobs, id, queryClient]);
+
+  const midiBySource = new Map((song?.midi ?? []).map((m) => [m.source, m]));
+  const midiSourceOptions: MidiSource[] = stemsReady
+    ? [...MIDI_SOURCES]
+    : ["master"];
 
   if (isLoading || !song) {
     return <p className="py-16 text-center text-muted-foreground">{isLoading ? "Loading…" : "Song not found."}</p>;
@@ -280,6 +328,53 @@ export function SongView({ id }: { id: string }) {
               : "Generate stems"}
           </Button>
         )}
+      </section>
+
+      <section className="rounded-xl border bg-card p-4" data-testid="midi-section">
+        <h2 className="font-medium">MIDI</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Transcribe audio to an approximate MIDI file (Spotify Basic Pitch on CPU). Stems often
+          transcribe cleaner than the full mix.
+        </p>
+        {(song.midi?.length ?? 0) > 0 ? (
+          <ul className="mt-4 flex flex-col gap-2">
+            {song.midi!.map((m: MidiView) => (
+              <li key={m.id} className="flex items-center justify-between rounded-lg border px-3 py-2">
+                <span className="capitalize text-sm">{m.source === "master" ? "Full mix" : m.source}</span>
+                <a href={`/api/audio/${m.path}`} download>
+                  <Button variant="outline" size="sm" data-testid={`download-midi-${m.source}`}>
+                    <Download className="size-4" /> MIDI
+                  </Button>
+                </a>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Select value={midiSource} onValueChange={(v) => setMidiSource(v as MidiSource)}>
+            <SelectTrigger className="w-36" aria-label="MIDI source" data-testid="midi-source-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {midiSourceOptions.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s === "master" ? "Full mix" : s.charAt(0).toUpperCase() + s.slice(1)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            data-testid="generate-midi"
+            onClick={() => midiMutation.mutate(midiSource)}
+            disabled={midiMutation.isPending || !!midiJob}
+          >
+            {midiJob
+              ? `Transcribing… ${Math.round((midiJob.progress ?? 0) * 100)}%`
+              : midiBySource.get(midiSource)
+                ? "Re-transcribe to MIDI"
+                : "Transcribe to MIDI"}
+          </Button>
+        </div>
       </section>
 
       <div className="flex items-center justify-between border-t pt-6">

@@ -17,7 +17,10 @@ import { fetchSongs, importLibrary, type SongView } from "@/lib/client/api";
 import { cn } from "@/lib/utils";
 
 export function LibraryView() {
-  const { data: songs, refetch } = useQuery({ queryKey: ["songs"], queryFn: fetchSongs });
+  const { data: songs, refetch } = useQuery({
+    queryKey: ["songs"],
+    queryFn: ({ signal }) => fetchSongs(signal),
+  });
   const [view, setView] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);

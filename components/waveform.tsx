@@ -46,8 +46,13 @@ export function Waveform({ songId }: { songId: string }) {
     const ws = wsRef.current;
     const media = playerAudio();
     if (!ws || !media || current?.id !== songId) return;
-    void ws.load(`/api/audio/${current.audioPath}`);
-  }, [current?.id, songId]);
+    void ws.load(`/api/audio/${current.audioPath}`).catch((err: unknown) => {
+      // wavesurfer aborts an in-flight peak fetch when load() is called again.
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        console.warn("[waveform] load failed", err);
+      }
+    });
+  }, [current?.id, songId, current?.audioPath]);
 
   return (
     <div

@@ -12,7 +12,7 @@ import { fetchHealth } from "@/lib/client/api";
 export function StatusBanner() {
   const { data, isError, isLoading } = useQuery({
     queryKey: ["health"],
-    queryFn: fetchHealth,
+    queryFn: ({ signal }) => fetchHealth(signal),
     refetchInterval: 3000,
     retry: 2,
   });
@@ -62,6 +62,13 @@ export function StatusBanner() {
       <span className="font-medium">Engine starting…</span> First run downloads several GB of
       model weights — this happens once. Warm-up takes about a minute with weights on disk.
       <span className="text-muted-foreground"> ({elapsed}s elapsed)</span>
+      {elapsed >= 90 ? (
+        <span className="mt-1 block text-muted-foreground">
+          Models load on your first <strong>Forge</strong> — stem separation uses Demucs separately
+          and does not need the engine. If Forge also fails, restart{" "}
+          <code className="rounded bg-muted px-1 py-0.5">./scripts/dev.sh</code>.
+        </span>
+      ) : null}
     </div>
   );
 }

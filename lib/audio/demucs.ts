@@ -7,11 +7,59 @@
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { env } from "@/lib/env";
 
 export const STEM_NAMES = ["vocals", "drums", "bass", "other"] as const;
 export type StemName = (typeof STEM_NAMES)[number];
+
+const DEMUCS_INSTALL_HINT =
+  'Run ./scripts/setup.sh — or: uv tool install --python 3.12 --with "torchaudio<2.9" --with soundfile demucs==4.0.1';
+
+let cachedDemucsBin: string | null | undefined;
+
+/** Resolve the demucs executable. uv installs to ~/.local/bin, which GUI/minimal
+ *  shells often omit from PATH — check common locations before giving up. */
+export function resolveDemucsBin(): string | null {
+  if (cachedDemucsBin !== undefined) return cachedDemucsBin;
+
+  const candidates: string[] = [];
+  if (env.DEMUCS_BIN) candidates.push(env.DEMUCS_BIN);
+
+  const home = os.homedir();
+  candidates.push(
+    path.join(home, ".local/bin/demucs"),
+    path.join(home, ".local/share/uv/tools/demucs/bin/demucs"),
+  );
+
+  if (process.env.PATH) {
+    for (const dir of process.env.PATH.split(path.delimiter)) {
+      if (dir) candidates.push(path.join(dir, "demucs"));
+    }
+  }
+
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) {
+        const st = fs.statSync(c);
+        if (st.isFile() && (st.mode & 0o111) !== 0) {
+          cachedDemucsBin = c;
+          return c;
+        }
+      }
+    } catch {
+      /* next candidate */
+    }
+  }
+
+  cachedDemucsBin = null;
+  return null;
+}
+
+export function demucsAvailable(): boolean {
+  return env.MOCK_ENGINE || resolveDemucsBin() !== null;
+}
 
 /** Run demucs and return absolute paths keyed by stem name. */
 export async function separateStems(
@@ -40,6 +88,7 @@ export async function separateStems(
   fs.mkdirSync(workDir, { recursive: true });
 
   onProgress?.(0.1, "Starting Demucs (CPU — this may take a few minutes)...");
+  await assertDemucsAudioIo();
   await runDemucs(inputAbs, workDir);
   onProgress?.(0.85, "Collecting stem files...");
 
@@ -66,9 +115,58 @@ export async function separateStems(
   return out as Record<StemName, string>;
 }
 
-function runDemucs(inputAbs: string, outDir: string): Promise<void> {
+function resolveDemucsPython(bin: string): string {
+  let resolved = bin;
+  try {
+    resolved = fs.realpathSync(bin);
+  } catch {
+    /* use bin as-is */
+  }
+  return path.join(path.dirname(resolved), "python3.12");
+}
+
+/** torchaudio 2.8 needs the soundfile backend to read/write WAV on macOS. */
+function assertDemucsAudioIo(): Promise<void> {
+  const bin = resolveDemucsBin();
+  if (!bin) {
+    return Promise.reject(new Error(`demucs not available — ${DEMUCS_INSTALL_HINT}`));
+  }
+  const py = resolveDemucsPython(bin);
   return new Promise((resolve, reject) => {
-    const proc = spawn("demucs", ["-n", "htdemucs", "-o", outDir, inputAbs], {
+    const proc = spawn(
+      py,
+      [
+        "-c",
+        "import soundfile; import torchaudio; assert 'soundfile' in torchaudio.list_audio_backends()",
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    );
+    let stderr = "";
+    proc.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+    proc.on("error", (err) =>
+      reject(new Error(`demucs Python not runnable: ${err.message} (${DEMUCS_INSTALL_HINT})`)),
+    );
+    proc.on("close", (code) =>
+      code === 0
+        ? resolve()
+        : reject(
+            new Error(
+              `demucs is missing soundfile audio I/O (${stderr.trim() || "check failed"}) — ${DEMUCS_INSTALL_HINT}`,
+            ),
+          ),
+    );
+  });
+}
+
+function runDemucs(inputAbs: string, outDir: string): Promise<void> {
+  const bin = resolveDemucsBin();
+  if (!bin) {
+    return Promise.reject(new Error(`demucs not available — ${DEMUCS_INSTALL_HINT}`));
+  }
+  return new Promise((resolve, reject) => {
+    const proc = spawn(bin, ["-n", "htdemucs", "-o", outDir, inputAbs], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stderr = "";
@@ -76,7 +174,7 @@ function runDemucs(inputAbs: string, outDir: string): Promise<void> {
       stderr += d.toString();
     });
     proc.on("error", (err) =>
-      reject(new Error(`demucs not available: ${err.message} (install via scripts/setup.sh)`)),
+      reject(new Error(`demucs not available: ${err.message} (${DEMUCS_INSTALL_HINT})`)),
     );
     proc.on("close", (code) =>
       code === 0 ? resolve() : reject(new Error(`demucs exited ${code}: ${stderr.slice(-500)}`)),

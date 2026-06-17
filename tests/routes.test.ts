@@ -80,6 +80,7 @@ describe("GET /api/jobs", () => {
     const { jobs } = (await jobsRes.json()) as { jobs: Array<Record<string, unknown>> };
     const job = jobs.find((j) => j.id === jobId)!;
     expect(job).toMatchObject({ type: "generate", status: "succeeded", progress: 1 });
+    expect(job).toHaveProperty("songId");
     expect(job).toHaveProperty("stage");
     expect(job).toHaveProperty("error");
     const result = job.result as { songIds: string[]; variationGroupId: string };

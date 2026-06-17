@@ -9,6 +9,7 @@
  *   jobs     — queue persistence; survives app restarts. The in-process queue
  *              re-enqueues `queued` rows on boot and fails orphaned `running` rows.
  *   stems    — one row per Demucs-separated track (vocals|drums|bass|other).
+ *   midi_tracks — one row per transcribed MIDI export (master or per-stem source).
  *   settings — key/value store for app settings.
  */
 import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
@@ -36,7 +37,7 @@ export const songs = sqliteTable("songs", {
 
 export const jobs = sqliteTable("jobs", {
   id: text("id").primaryKey(), // uuid
-  type: text("type", { enum: ["generate", "stems"] }).notNull(),
+  type: text("type", { enum: ["generate", "stems", "midi"] }).notNull(),
   status: text("status", {
     enum: ["queued", "running", "succeeded", "failed"],
   }).notNull(),
@@ -62,6 +63,18 @@ export const stems = sqliteTable("stems", {
   createdAt: integer("created_at").notNull(), // epoch ms
 });
 
+export const MIDI_SOURCES = ["master", "vocals", "drums", "bass", "other"] as const;
+
+export const midiTracks = sqliteTable("midi_tracks", {
+  id: text("id").primaryKey(), // uuid
+  songId: text("song_id")
+    .notNull()
+    .references(() => songs.id, { onDelete: "cascade" }),
+  source: text("source", { enum: MIDI_SOURCES }).notNull(),
+  path: text("path").notNull(), // relative to DATA_DIR/audio
+  createdAt: integer("created_at").notNull(), // epoch ms
+});
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -73,3 +86,5 @@ export type Job = typeof jobs.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
 export type Stem = typeof stems.$inferSelect;
 export type NewStem = typeof stems.$inferInsert;
+export type MidiTrack = typeof midiTracks.$inferSelect;
+export type NewMidiTrack = typeof midiTracks.$inferInsert;

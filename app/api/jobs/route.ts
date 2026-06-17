@@ -27,6 +27,15 @@ export async function GET() {
     } catch {
       console.warn(`[jobs] unparseable result on job ${row.id}`);
     }
+    let midiSource: string | null = null;
+    if (row.type === "midi") {
+      try {
+        const payload = JSON.parse(row.payload) as { source?: string };
+        midiSource = payload.source ?? null;
+      } catch {
+        midiSource = null;
+      }
+    }
     return {
       id: row.id,
       type: row.type,
@@ -34,6 +43,8 @@ export async function GET() {
       progress: row.progress,
       stage: queue.stages.get(row.id) ?? null,
       error: row.error,
+      songId: row.songId,
+      midiSource,
       result,
       createdAt: row.createdAt,
       startedAt: row.startedAt,

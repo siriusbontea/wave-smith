@@ -61,6 +61,17 @@ function ensureAudio(set: (p: Partial<PlayerState>) => void): HTMLAudioElement {
   return el;
 }
 
+function safePlay(el: HTMLAudioElement): void {
+  // play() rejects with AbortError when interrupted (e.g. rapid toggle) — benign.
+  void el.play().catch((err: unknown) => {
+    if (!isAbortError(err)) console.warn("[player] play failed", err);
+  });
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
 export const usePlayer = create<PlayerState>((set, get) => ({
   current: null,
   isPlaying: false,
@@ -75,7 +86,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
       el.playbackRate = get().playbackRate;
       set({ current: song, currentTime: 0, duration: song.durationS ?? 0 });
     }
-    if (autoplay) void el.play();
+    if (autoplay) safePlay(el);
   },
 
   playSong: (song) => {
@@ -89,7 +100,7 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   toggle: () => {
     const el = audio;
     if (!el || !get().current) return;
-    if (el.paused) void el.play();
+    if (el.paused) safePlay(el);
     else el.pause();
   },
 

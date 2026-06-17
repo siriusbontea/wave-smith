@@ -6,14 +6,19 @@
 
 export interface JobView {
   id: string;
-  type: "generate" | "stems";
+  type: "generate" | "stems" | "midi";
   status: "queued" | "running" | "succeeded" | "failed";
   progress: number | null;
   stage: string | null;
   error: string | null;
+  /** Set at enqueue for stems/midi jobs; set on success for generate jobs. */
+  songId: string | null;
+  /** Present for midi jobs while queued/running (from job payload). */
+  midiSource?: "master" | "vocals" | "drums" | "bass" | "other" | null;
   result:
     | { songIds: string[]; variationGroupId: string }
     | { stemIds: string[]; songId: string }
+    | { midiId: string; songId: string; source: string }
     | null;
   createdAt: number;
   startedAt: number | null;
@@ -65,6 +70,14 @@ export interface SongView {
   favorite: boolean;
   createdAt: number;
   stems?: StemView[];
+  midi?: MidiView[];
+}
+
+export interface MidiView {
+  id: string;
+  source: "master" | "vocals" | "drums" | "bass" | "other";
+  path: string;
+  createdAt: number;
 }
 
 export interface StemView {
@@ -82,6 +95,11 @@ export interface SongPatch {
   keyScale?: string | null;
   timeSignature?: "2" | "3" | "4" | "6" | null;
   favorite?: boolean;
+}
+
+/** TanStack Query cancels in-flight polls; treat as benign, not a user error. */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
 }
 
 async function jsonOrThrow<T>(res: Response): Promise<T> {
@@ -104,13 +122,13 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return body as T;
 }
 
-export async function fetchJobs(): Promise<JobView[]> {
-  const res = await fetch("/api/jobs", { cache: "no-store" });
+export async function fetchJobs(signal?: AbortSignal): Promise<JobView[]> {
+  const res = await fetch("/api/jobs", { cache: "no-store", signal });
   return (await jsonOrThrow<{ jobs: JobView[] }>(res)).jobs;
 }
 
-export async function fetchHealth(): Promise<HealthView> {
-  const res = await fetch("/api/health", { cache: "no-store" });
+export async function fetchHealth(signal?: AbortSignal): Promise<HealthView> {
+  const res = await fetch("/api/health", { cache: "no-store", signal });
   return jsonOrThrow<HealthView>(res);
 }
 
@@ -164,13 +182,13 @@ export async function enhance(params: {
   return jsonOrThrow<EnhanceView>(res);
 }
 
-export async function fetchSongs(): Promise<SongView[]> {
-  const res = await fetch("/api/songs", { cache: "no-store" });
+export async function fetchSongs(signal?: AbortSignal): Promise<SongView[]> {
+  const res = await fetch("/api/songs", { cache: "no-store", signal });
   return (await jsonOrThrow<{ songs: SongView[] }>(res)).songs;
 }
 
-export async function fetchSong(id: string): Promise<SongView> {
-  const res = await fetch(`/api/songs/${id}`, { cache: "no-store" });
+export async function fetchSong(id: string, signal?: AbortSignal): Promise<SongView> {
+  const res = await fetch(`/api/songs/${id}`, { cache: "no-store", signal });
   return jsonOrThrow<SongView>(res);
 }
 
@@ -199,5 +217,17 @@ export async function importLibrary(json: unknown): Promise<{ imported: number; 
 
 export async function forgeStems(songId: string): Promise<{ jobId: string }> {
   const res = await fetch(`/api/songs/${songId}/stems`, { method: "POST" });
+  return jsonOrThrow<{ jobId: string }>(res);
+}
+
+export async function forgeMidi(
+  songId: string,
+  source: "master" | "vocals" | "drums" | "bass" | "other",
+): Promise<{ jobId: string }> {
+  const res = await fetch(`/api/songs/${songId}/midi`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
   return jsonOrThrow<{ jobId: string }>(res);
 }

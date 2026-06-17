@@ -82,11 +82,38 @@ ok "Model weights present"
 
 # ── 6. Demucs (stems, M5) — pinned: demucs 4.0.1 needs torchaudio<2.9 (load/save APIs) ──
 if ! demucs --help >/dev/null 2>&1; then
-  echo "Installing demucs (pinned, Python 3.12)..."
-  uv tool install --python 3.12 --with "torchaudio<2.9" demucs==4.0.1 || \
+  echo "Installing demucs (pinned, Python 3.12 + soundfile for WAV I/O)..."
+  uv tool install --python 3.12 --with "torchaudio<2.9" --with soundfile demucs==4.0.1 || \
     warn "demucs install failed — stems will be unavailable until installed"
 fi
+# Re-run with --force when demucs exists but lacks soundfile (torchaudio save fails on macOS).
+if demucs --help >/dev/null 2>&1; then
+  DEMUCS_PY="${HOME}/.local/share/uv/tools/demucs/bin/python3.12"
+  if [[ -x "$DEMUCS_PY" ]] && ! "$DEMUCS_PY" -c "import soundfile" >/dev/null 2>&1; then
+    echo "Upgrading demucs tool env (adding soundfile)..."
+    uv tool install --force --python 3.12 --with "torchaudio<2.9" --with soundfile demucs==4.0.1 || \
+      warn "demucs soundfile upgrade failed"
+  fi
+fi
 if demucs --help >/dev/null 2>&1; then ok "demucs available"; else warn "demucs not available (stems disabled)"; fi
+
+# ── 6b. Basic Pitch (approximate MIDI transcription) ──
+if ! basic-pitch --help >/dev/null 2>&1; then
+  echo "Installing basic-pitch (ONNX backend, pinned scipy/setuptools)..."
+  uv tool install --python 3.12 --with "setuptools<81" --with onnxruntime --with "scipy==1.11.4" "basic-pitch[onnx]" || \
+    warn "basic-pitch install failed — MIDI export disabled until installed"
+fi
+if basic-pitch --help >/dev/null 2>&1; then
+  BP_PY="${HOME}/.local/share/uv/tools/basic-pitch/bin/python3.12"
+  if [[ -x "$BP_PY" ]] && ! "$BP_PY" -c "import onnxruntime, scipy.signal; assert hasattr(scipy.signal,'gaussian')" >/dev/null 2>&1; then
+    echo "Upgrading basic-pitch tool env (ONNX + scipy pin)..."
+    uv tool install --force --python 3.12 --with "setuptools<81" --with onnxruntime --with "scipy==1.11.4" "basic-pitch[onnx]" || \
+      warn "basic-pitch upgrade failed"
+  fi
+  ok "basic-pitch available"
+else
+  warn "basic-pitch not available (MIDI disabled)"
+fi
 
 # ── 7. App deps + database ───────────────────────────────────────────────────
 (cd "$ROOT" && pnpm install) || fail "pnpm install failed"

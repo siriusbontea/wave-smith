@@ -19,7 +19,7 @@ const ACTIVE = new Set(["queued", "running"]);
 export function QueueStrip() {
   const { data: jobs } = useQuery({
     queryKey: ["jobs"],
-    queryFn: fetchJobs,
+    queryFn: ({ signal }) => fetchJobs(signal),
     refetchInterval: (query) =>
       (query.state.data ?? []).some((j) => ACTIVE.has(j.status)) ? 1000 : 5000,
   });
@@ -46,6 +46,8 @@ export function QueueStrip() {
           });
         } else if (job.type === "stems") {
           toast.success("Stems ready");
+        } else if (job.type === "midi") {
+          toast.success("MIDI ready");
         }
       } else {
         toast.error("Forge failed", { description: job.error ?? undefined });
@@ -112,6 +114,9 @@ function JobRow({ job, queuePosition }: { job: JobView; queuePosition: number })
       )}
       {job.status === "succeeded" && job.type === "stems" && (
         <span>Stems separated — open the song to download.</span>
+      )}
+      {job.status === "succeeded" && job.type === "midi" && (
+        <span>MIDI transcribed — open the song to download.</span>
       )}
       {job.status === "failed" && (
         <span className="text-destructive">{job.error ?? "Forge failed"}</span>

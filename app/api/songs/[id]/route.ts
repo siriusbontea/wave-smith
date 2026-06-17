@@ -5,7 +5,7 @@
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { deleteSong, getSongWithStems, updateSong } from "@/lib/songs/queries";
+import { deleteSong, getSongDetail, updateSong } from "@/lib/songs/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -23,14 +23,14 @@ const PatchSchema = z
 
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
-  const song = getSongWithStems(id);
+  const song = getSongDetail(id);
   if (!song) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(song);
 }
 
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
-  if (!getSongWithStems(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!getSongDetail(id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
   let body: unknown;
   try {
     body = await req.json();

@@ -8,7 +8,7 @@ import path from "node:path";
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { env } from "@/lib/env";
-import type { Song, Stem } from "@/db/schema";
+import type { Song, Stem, MidiTrack } from "@/db/schema";
 
 export interface SongDTO {
   id: string;
@@ -58,14 +58,34 @@ export interface StemDTO {
   createdAt: number;
 }
 
+export interface MidiDTO {
+  id: string;
+  source: "master" | "vocals" | "drums" | "bass" | "other";
+  path: string;
+  createdAt: number;
+}
+
 export interface SongWithStemsDTO extends SongDTO {
   stems: StemDTO[];
+}
+
+export interface SongDetailDTO extends SongWithStemsDTO {
+  midi: MidiDTO[];
 }
 
 function toStemDTO(row: Stem): StemDTO {
   return {
     id: row.id,
     stemName: row.stemName,
+    path: row.path,
+    createdAt: row.createdAt,
+  };
+}
+
+function toMidiDTO(row: MidiTrack): MidiDTO {
+  return {
+    id: row.id,
+    source: row.source,
     path: row.path,
     createdAt: row.createdAt,
   };
@@ -80,6 +100,15 @@ export function listStemsForSong(songId: string): StemDTO[] {
     .map(toStemDTO);
 }
 
+export function listMidiForSong(songId: string): MidiDTO[] {
+  return db
+    .select()
+    .from(schema.midiTracks)
+    .where(eq(schema.midiTracks.songId, songId))
+    .all()
+    .map(toMidiDTO);
+}
+
 export function getSong(id: string): SongDTO | null {
   const row = db.select().from(schema.songs).where(eq(schema.songs.id, id)).get();
   return row ? toDTO(row) : null;
@@ -89,6 +118,12 @@ export function getSongWithStems(id: string): SongWithStemsDTO | null {
   const song = getSong(id);
   if (!song) return null;
   return { ...song, stems: listStemsForSong(id) };
+}
+
+export function getSongDetail(id: string): SongDetailDTO | null {
+  const song = getSongWithStems(id);
+  if (!song) return null;
+  return { ...song, midi: listMidiForSong(id) };
 }
 
 export interface SongPatch {
@@ -115,13 +150,11 @@ export function updateSong(id: string, patch: SongPatch): SongDTO | null {
   return getSong(id);
 }
 
-/** Delete the row (stems cascade via FK) and remove the on-disk audio dir. */
+/** Delete the row (stems/midi cascade via FK) and remove the on-disk audio dir. */
 export function deleteSong(id: string): boolean {
   const song = getSong(id);
   if (!song) return false;
   db.delete(schema.songs).where(eq(schema.songs.id, id)).run();
-  // audioPath is "<songId>/take.<ext>" — remove the whole song directory
-  // (master + any cached mp3 + stems) but confine to the audio dir.
   const songDir = path.resolve(env.audioDir, path.dirname(song.audioPath));
   if (songDir.startsWith(env.audioDir + path.sep)) {
     fs.rmSync(songDir, { recursive: true, force: true });

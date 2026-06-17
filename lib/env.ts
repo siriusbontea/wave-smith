@@ -36,6 +36,10 @@ const EnvSchema = z.object({
     .transform((u) => u.replace(/\/+$/, "")),
   /** Ollama model tag for lyric writing. */
   LYRICS_MODEL: z.string().default("dolphin3:8b"),
+  /** Absolute path to the demucs CLI (optional; auto-detected from uv/Homebrew PATH). */
+  DEMUCS_BIN: z.string().optional(),
+  /** Absolute path to the basic-pitch CLI (optional; auto-detected like demucs). */
+  BASIC_PITCH_BIN: z.string().optional(),
 });
 
 // Empty-string env vars (e.g. `ENGINE_URL=` in a .env) must mean "unset" —

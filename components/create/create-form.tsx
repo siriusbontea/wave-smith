@@ -78,7 +78,7 @@ export function CreateForm() {
   const queryClient = useQueryClient();
   const { data: health, isError: healthError } = useQuery({
     queryKey: ["health"],
-    queryFn: fetchHealth,
+    queryFn: ({ signal }) => fetchHealth(signal),
     refetchInterval: 3000,
     retry: 2,
   });

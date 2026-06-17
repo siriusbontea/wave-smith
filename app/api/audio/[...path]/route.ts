@@ -18,6 +18,8 @@ const MEDIA_TYPES: Record<string, string> = {
   ".mp3": "audio/mpeg",
   ".flac": "audio/flac",
   ".ogg": "audio/ogg",
+  ".mid": "audio/midi",
+  ".midi": "audio/midi",
 };
 
 export async function GET(

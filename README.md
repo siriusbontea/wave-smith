@@ -17,6 +17,7 @@
 - **Library** — grid/list, procedural cover art, favorites, search, export/import (JSON metadata)
 - **Playback** — one global player + waveform; seeking works (HTTP Range support)
 - **Stems** — Demucs separation → vocals / drums / bass / other + ZIP download
+- **MIDI** — approximate audio→MIDI transcription (Basic Pitch) from full mix or individual stems
 - **Settings** — engine health, storage stats, theme, optional test generation
 
 Optional **Generate Lyrics** uses a local [Ollama](https://ollama.com) model. If Ollama is not installed, that button hides and everything else still works.
@@ -91,7 +92,7 @@ This is **idempotent** — safe to re-run. It will:
 3. Clone ACE-Step 1.5 at tag **v0.1.8** into `engine/ACE-Step-1.5`
 4. Run `uv sync` for engine Python deps
 5. Download model weights (~**10 GB**, the long step on first run)
-6. Install **Demucs** (stems) via `uv tool install`
+6. Install **Demucs** (stems) and **Basic Pitch** (MIDI) via `uv tool install`
 7. `pnpm install` + database migrate
 
 **Expect:** tens of minutes on first setup, mostly the model download.
@@ -124,6 +125,7 @@ First engine warm-up after boot takes about **45 seconds** with weights already 
 
 - ~22 s per 30 s song when forging 2 variations (batch)
 - Stem separation (Demucs, CPU): a few minutes per song
+- MIDI transcription (Basic Pitch, CPU): ~10s for short clips; scales with song length
 
 ---
 
@@ -196,8 +198,18 @@ See the direct-download fallback note in `docs/DECISIONS.md`. Re-run `./scripts/
 Ensure Demucs installed: `demucs --help`. Re-run setup step or:
 
 ```bash
-uv tool install --python 3.12 --with "torchaudio<2.9" demucs==4.0.1
+uv tool install --python 3.12 --with "torchaudio<2.9" --with soundfile demucs==4.0.1
 ```
+
+### MIDI transcription fails
+
+Ensure Basic Pitch is installed: `basic-pitch --help` (first run loads ONNX — can take ~30s). Re-run setup or:
+
+```bash
+uv tool install --python 3.12 --with "setuptools<81" --with onnxruntime --with "scipy==1.11.4" "basic-pitch[onnx]"
+```
+
+Transcription is **approximate** — monophonic parts work best. Try a **stem** (bass, vocals) instead of the full mix for cleaner results. Runs on CPU only; does not need the ACE-Step engine.
 
 ### `pnpm test` / CI
 

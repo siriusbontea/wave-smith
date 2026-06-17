@@ -301,6 +301,33 @@ describe("Queue (mock engine)", () => {
     const stems = db.select().from(schema.stems).where(eq(schema.stems.songId, songId)).all();
     expect(stems).toHaveLength(4);
   });
+
+  it("runs midi jobs when the song exists (mock basic-pitch)", async () => {
+    const songId = crypto.randomUUID();
+    const rel = path.join(songId, "take.mp3");
+    const abs = path.join(env.audioDir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.copyFileSync(path.resolve("public/demo-clip.mp3"), abs);
+    db.insert(schema.songs)
+      .values({
+        id: songId,
+        title: "MIDI test",
+        prompt: "x",
+        tags: "[]",
+        model: "mock",
+        variationGroupId: songId,
+        audioPath: rel,
+        artSeed: "x",
+        createdAt: Date.now(),
+      })
+      .run();
+    const jobId = queue.enqueue("midi", { songId, source: "master" });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe("succeeded");
+    const midi = db.select().from(schema.midiTracks).where(eq(schema.midiTracks.songId, songId)).all();
+    expect(midi).toHaveLength(1);
+    expect(midi[0]?.source).toBe("master");
+  });
 });
 
 describe("queue helpers", () => {

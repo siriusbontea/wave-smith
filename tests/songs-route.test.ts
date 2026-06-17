@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { GET as songsGET } from "@/app/api/songs/route";
 import { GET as songGET, PATCH as songPATCH, DELETE as songDELETE } from "@/app/api/songs/[id]/route";
 import { POST as stemsPOST } from "@/app/api/songs/[id]/stems/route";
+import { POST as midiPOST } from "@/app/api/songs/[id]/midi/route";
 import { db, schema } from "@/lib/db";
 import { env } from "@/lib/env";
 
@@ -79,6 +80,25 @@ describe("POST /api/songs/[id]/stems", () => {
     const { jobId } = (await res.json()) as { jobId: string };
     const job = db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
     expect(job?.type).toBe("stems");
+    expect(job?.songId).toBe(SONG_ID);
+  });
+});
+
+describe("POST /api/songs/[id]/midi", () => {
+  it("enqueues a midi job for master", async () => {
+    const res = await midiPOST(
+      new Request("http://x", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: "master" }),
+      }),
+      { params: Promise.resolve({ id: SONG_ID }) },
+    );
+    expect(res.status).toBe(202);
+    const { jobId } = (await res.json()) as { jobId: string };
+    const job = db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId)).get();
+    expect(job?.type).toBe("midi");
+    expect(job?.songId).toBe(SONG_ID);
   });
 });
 

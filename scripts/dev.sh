@@ -13,6 +13,9 @@ set -m # job control: each background job gets its own process group (cleanup re
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# uv-installed CLIs (demucs) live here; GUI-launched shells often omit it.
+export PATH="${HOME}/.local/bin:${PATH}"
+
 # .env is the single config surface (.env.example documents it). Sourcing with
 # set -a exports everything — ACESTEP_* passthroughs reach the engine launch.
 if [[ -f "$ROOT/.env" ]]; then

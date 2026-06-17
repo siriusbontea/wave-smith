@@ -20,7 +20,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { asc, eq } from "drizzle-orm";
+import { asc, and, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getEngineClient } from "@/lib/engine";
 import {
@@ -30,7 +30,8 @@ import {
 } from "@/lib/engine/types";
 import { env } from "@/lib/env";
 import { separateStems } from "@/lib/audio/demucs";
-import { getSong, songAudioAbsPath } from "@/lib/songs/queries";
+import { transcribeToMidi, type MidiSource } from "@/lib/audio/basic-pitch";
+import { getSong, listStemsForSong, songAudioAbsPath } from "@/lib/songs/queries";
 
 /** Payload of a "generate" job (validated by the /api/generate zod schema). */
 export interface GenerateJobPayload {
@@ -50,6 +51,12 @@ export interface GenerateJobPayload {
 /** Payload of a "stems" job — separate one song into four tracks. */
 export interface StemsJobPayload {
   songId: string;
+}
+
+/** Payload of a "midi" job — transcribe master or one stem to MIDI. */
+export interface MidiJobPayload {
+  songId: string;
+  source: MidiSource;
 }
 
 export interface QueueOptions {
@@ -92,15 +99,25 @@ export class Queue {
 
   enqueue(type: "generate", payload: GenerateJobPayload): string;
   enqueue(type: "stems", payload: StemsJobPayload): string;
-  enqueue(type: "generate" | "stems", payload: GenerateJobPayload | StemsJobPayload): string {
+  enqueue(type: "midi", payload: MidiJobPayload): string;
+  enqueue(
+    type: "generate" | "stems" | "midi",
+    payload: GenerateJobPayload | StemsJobPayload | MidiJobPayload,
+  ): string {
     const id = crypto.randomUUID();
+    const songId =
+      type === "stems"
+        ? (payload as StemsJobPayload).songId
+        : type === "midi"
+          ? (payload as MidiJobPayload).songId
+          : null;
     db.insert(schema.jobs)
       .values({
         id,
         type,
         status: "queued",
         payload: JSON.stringify(payload),
-        songId: type === "stems" ? (payload as StemsJobPayload).songId : null,
+        songId,
         createdAt: Date.now(),
       })
       .run();
@@ -151,6 +168,8 @@ export class Queue {
         await this.runGenerate(job.id, JSON.parse(job.payload) as GenerateJobPayload);
       } else if (job.type === "stems") {
         await this.runStems(job.id, JSON.parse(job.payload) as StemsJobPayload);
+      } else if (job.type === "midi") {
+        await this.runMidi(job.id, JSON.parse(job.payload) as MidiJobPayload);
       } else {
         throw new Error(`Unsupported job type: ${job.type}`);
       }
@@ -350,6 +369,63 @@ export class Queue {
         status: "succeeded",
         progress: 1,
         result: JSON.stringify({ stemIds, songId: payload.songId }),
+        songId: payload.songId,
+        finishedAt: Date.now(),
+      })
+      .where(eq(schema.jobs.id, jobId))
+      .run();
+  }
+
+  private async runMidi(jobId: string, payload: MidiJobPayload): Promise<void> {
+    const song = getSong(payload.songId);
+    if (!song) throw new Error("Song not found — it may have been deleted.");
+
+    let inputAbs: string | null = null;
+    if (payload.source === "master") {
+      inputAbs = songAudioAbsPath(song);
+    } else {
+      const stem = listStemsForSong(payload.songId).find((s) => s.stemName === payload.source);
+      if (!stem) {
+        throw new Error(`Stem "${payload.source}" not ready — generate stems first, or transcribe from master.`);
+      }
+      inputAbs = path.resolve(env.audioDir, stem.path);
+      if (!inputAbs.startsWith(env.audioDir + path.sep) || !fs.existsSync(inputAbs)) {
+        throw new Error(`Stem audio missing on disk for "${payload.source}".`);
+      }
+    }
+    if (!inputAbs || !fs.existsSync(inputAbs)) {
+      throw new Error("Source audio missing on disk — cannot transcribe to MIDI.");
+    }
+
+    const midiAbs = await transcribeToMidi(inputAbs, payload.songId, payload.source, (fraction, stage) => {
+      db.update(schema.jobs).set({ progress: fraction }).where(eq(schema.jobs.id, jobId)).run();
+      this.stages.set(jobId, stage);
+    });
+
+    const id = crypto.randomUUID();
+    const relPath = path.relative(env.audioDir, midiAbs);
+    const now = Date.now();
+    db.delete(schema.midiTracks)
+      .where(
+        and(eq(schema.midiTracks.songId, payload.songId), eq(schema.midiTracks.source, payload.source)),
+      )
+      .run();
+
+    db.insert(schema.midiTracks)
+      .values({
+        id,
+        songId: payload.songId,
+        source: payload.source,
+        path: relPath,
+        createdAt: now,
+      })
+      .run();
+
+    db.update(schema.jobs)
+      .set({
+        status: "succeeded",
+        progress: 1,
+        result: JSON.stringify({ midiId: id, songId: payload.songId, source: payload.source }),
         songId: payload.songId,
         finishedAt: Date.now(),
       })
