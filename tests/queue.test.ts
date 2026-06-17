@@ -119,6 +119,38 @@ describe("Queue (mock engine)", () => {
     const jobId = queue.enqueue("generate", payload({ variations: 1 }));
     await waitForJob(jobId);
     expect(generateSpy.mock.calls[0]![0].simpleMode).toBe(false);
+    expect(generateSpy.mock.calls[0]![0].lockVocalLanguage).toBe(true);
+    expect(generateSpy.mock.calls[0]![0].vocalLanguage).toBe("en");
+  });
+
+  it("splits embedded lyrics from the prompt and disables Simple Mode", async () => {
+    const generateSpy = vi.spyOn(engine, "generate");
+    const jobId = queue.enqueue(
+      "generate",
+      payload({
+        prompt: "dreamy darkwave indie, 95 bpm\nVerse 1:\nNeon fog\nBridge:\nТы мой волк",
+        lyrics: "",
+        variations: 1,
+      }),
+    );
+    await waitForJob(jobId);
+    const req = generateSpy.mock.calls[0]![0];
+    expect(req.simpleMode).toBe(false);
+    expect(req.lyrics).toContain("Verse 1:");
+    expect(req.lyrics).toContain("Ты мой волк");
+    expect(req.vocalLanguage).toBe("unknown");
+    expect(req.lockVocalLanguage).toBe(true);
+  });
+
+  it("passes explicit vocalLanguage through with lock", async () => {
+    const generateSpy = vi.spyOn(engine, "generate");
+    const jobId = queue.enqueue(
+      "generate",
+      payload({ vocalLanguage: "ru", variations: 1 }),
+    );
+    await waitForJob(jobId);
+    expect(generateSpy.mock.calls[0]![0].vocalLanguage).toBe("ru");
+    expect(generateSpy.mock.calls[0]![0].lockVocalLanguage).toBe(true);
   });
 
   it("vocal forge sends user lyrics to the engine byte-verbatim (DoD #5 contract)", async () => {

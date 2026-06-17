@@ -151,6 +151,10 @@ export function SettingsView() {
             <dd className="truncate font-mono text-xs">{data.paths.dataDir}</dd>
           </div>
           <div className="flex justify-between gap-4">
+            <dt className="text-muted-foreground">Audio directory</dt>
+            <dd className="truncate font-mono text-xs">{data.paths.audioDir}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
             <dt className="text-muted-foreground">Audio on disk</dt>
             <dd>{formatBytes(data.storage.audioBytes)}</dd>
           </div>

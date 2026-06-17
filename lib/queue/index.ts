@@ -32,6 +32,10 @@ import { env } from "@/lib/env";
 import { separateStems } from "@/lib/audio/demucs";
 import { transcribeToMidi, type MidiSource } from "@/lib/audio/basic-pitch";
 import { getSong, listStemsForSong, songAudioAbsPath } from "@/lib/songs/queries";
+import { prepareGenerateJob } from "@/lib/queue/prepare-generate";
+
+export { prepareGenerateJob } from "@/lib/queue/prepare-generate";
+export type { PreparedGenerateJob } from "@/lib/queue/prepare-generate";
 
 /** Payload of a "generate" job (validated by the /api/generate zod schema). */
 export interface GenerateJobPayload {
@@ -208,18 +212,18 @@ export class Queue {
     // 2. Submit. One batched call per forge — N takes, one queue slot (M0 decision).
     const variations = Math.max(1, Math.min(4, payload.variations));
     const seeds = expandSeeds(payload.seed, variations);
+    const forge = prepareGenerateJob(payload);
     const req: GenerateRequest = {
-      prompt: payload.prompt,
+      prompt: forge.prompt,
       // Engine contract: "[inst]" requests an instrumental render (ENGINE_NOTES §3).
-      lyrics: payload.instrumental ? "[inst]" : payload.lyrics,
-      // Vocal forge with no user lyrics ⇒ engine Simple Mode, or the engine
-      // would treat empty lyrics as instrumental — the LM writes the lyrics.
-      simpleMode: !payload.instrumental && !payload.lyrics.trim(),
+      lyrics: payload.instrumental ? "[inst]" : forge.lyrics,
+      simpleMode: forge.simpleMode,
       durationS: payload.durationS,
       bpm: payload.bpm,
       keyScale: payload.keyScale,
       timeSignature: payload.timeSignature,
-      vocalLanguage: payload.vocalLanguage,
+      vocalLanguage: forge.vocalLanguage,
+      lockVocalLanguage: forge.lockVocalLanguage,
       batchSize: variations,
       seeds,
     };
@@ -291,14 +295,14 @@ export class Queue {
     const songIds: string[] = [];
     for (const [i, take] of status.takes.entries()) {
       const { songId, relPath } = staged[i]!;
-      const title = deriveTitle(payload.prompt, i, status.takes.length);
-      const tags = JSON.stringify(deriveTags(payload.prompt));
+      const title = deriveTitle(forge.prompt, i, status.takes.length);
+      const tags = JSON.stringify(deriveTags(forge.prompt));
       db.insert(schema.songs)
         .values({
           id: songId,
           title,
-          prompt: payload.prompt,
-          lyrics: payload.instrumental ? null : (take.finalLyrics ?? payload.lyrics ?? null),
+          prompt: forge.prompt,
+          lyrics: payload.instrumental ? null : (take.finalLyrics ?? forge.lyrics ?? null),
           tags,
           bpm: take.bpm !== null ? Math.round(take.bpm) : null,
           keyScale: take.keyScale,

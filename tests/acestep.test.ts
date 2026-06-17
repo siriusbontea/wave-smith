@@ -214,6 +214,40 @@ describe("AceStepClient.generate", () => {
     expect(body.use_random_seed).toBe(false);
     expect(body.audio_format).toBe("wav");
     expect(body.audio_duration).toBe(600);
+    expect(body.vocal_language).toBe("unknown");
+  });
+
+  it("locks vocal language when requested", async () => {
+    stubFetchOnce(envelope({ task_id: "t", status: "queued", queue_position: 1 }));
+    const client = new AceStepClient(BASE);
+    await client.generate({
+      prompt: "p",
+      lyrics: "[verse]\nПривет",
+      vocalLanguage: "ru",
+      lockVocalLanguage: true,
+      batchSize: 1,
+      seeds: [1],
+    });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.vocal_language).toBe("ru");
+    expect(body.use_cot_language).toBe(false);
+  });
+
+  it("defaults Simple Mode vocal language to en", async () => {
+    stubFetchOnce(envelope({ task_id: "t", status: "queued", queue_position: 1 }));
+    const client = new AceStepClient(BASE);
+    await client.generate({
+      prompt: "upbeat pop",
+      lyrics: "",
+      simpleMode: true,
+      batchSize: 1,
+      seeds: [1],
+    });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.vocal_language).toBe("en");
+    expect(body.use_cot_language).toBeUndefined();
   });
 });
 

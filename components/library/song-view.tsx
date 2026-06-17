@@ -25,6 +25,7 @@ import {
   forgeStems,
   isAbortError,
   patchSong,
+  type JobView,
   type MidiView,
   type SongView,
 } from "@/lib/client/api";
@@ -34,6 +35,38 @@ import { formatDate, formatTime } from "@/lib/format";
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 const MIDI_SOURCES = ["master", "vocals", "drums", "bass", "other"] as const;
 type MidiSource = (typeof MIDI_SOURCES)[number];
+
+function JobProgress({ job, label }: { job: JobView; label: string }) {
+  const pct = Math.round((job.progress ?? 0) * 100);
+  return (
+    <div className="mt-3 flex flex-col gap-1.5" data-testid={`${label}-job-progress`}>
+      {job.status === "queued" ? (
+        <p className="text-sm text-muted-foreground">Queued — waiting for other jobs to finish…</p>
+      ) : (
+        <>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <span className="truncate text-muted-foreground">{job.stage ?? "Working…"}</span>
+            <span className="shrink-0 tabular-nums">{pct}%</span>
+          </div>
+          <div
+            className="h-1.5 overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+          </div>
+          {pct < 20 ? (
+            <p className="text-xs text-muted-foreground">
+              CPU work — progress updates in bursts; long songs can take a few minutes.
+            </p>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
 
 export function SongView({ id }: { id: string }) {
   const router = useRouter();
@@ -163,7 +196,6 @@ export function SongView({ id }: { id: string }) {
     (j) =>
       j.type === "midi" &&
       j.songId === id &&
-      j.midiSource === midiSource &&
       (j.status === "queued" || j.status === "running"),
   );
 
@@ -300,6 +332,7 @@ export function SongView({ id }: { id: string }) {
         <p className="mt-1 text-sm text-muted-foreground">
           Separate into vocals, drums, bass, and other (Demucs on CPU — may take a few minutes).
         </p>
+        {stemsJob ? <JobProgress job={stemsJob} label="stems" /> : null}
         {stemsReady ? (
           <div className="mt-4 flex flex-col gap-3">
             <div className="grid gap-2 sm:grid-cols-2">
@@ -323,9 +356,7 @@ export function SongView({ id }: { id: string }) {
             onClick={() => stemsMutation.mutate()}
             disabled={stemsMutation.isPending || !!stemsJob}
           >
-            {stemsJob
-              ? `Separating… ${Math.round((stemsJob.progress ?? 0) * 100)}%`
-              : "Generate stems"}
+            {stemsJob ? "Separating…" : "Generate stems"}
           </Button>
         )}
       </section>
@@ -334,13 +365,29 @@ export function SongView({ id }: { id: string }) {
         <h2 className="font-medium">MIDI</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Transcribe audio to an approximate MIDI file (Spotify Basic Pitch on CPU). Stems often
-          transcribe cleaner than the full mix.
+          transcribe cleaner than the full mix. Files are saved under{" "}
+          <code className="rounded bg-muted px-1 py-0.5 text-xs">data/audio/&lt;song-id&gt;/midi/</code>{" "}
+          — see Settings → Storage for the full path on your machine.
         </p>
+        {midiJob ? (
+          <JobProgress
+            job={midiJob}
+            label="midi"
+          />
+        ) : null}
+        {midiJob?.midiSource && midiJob.midiSource !== midiSource ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Transcribing <span className="capitalize">{midiJob.midiSource === "master" ? "full mix" : midiJob.midiSource}</span>…
+          </p>
+        ) : null}
         {(song.midi?.length ?? 0) > 0 ? (
           <ul className="mt-4 flex flex-col gap-2">
             {song.midi!.map((m: MidiView) => (
-              <li key={m.id} className="flex items-center justify-between rounded-lg border px-3 py-2">
-                <span className="capitalize text-sm">{m.source === "master" ? "Full mix" : m.source}</span>
+              <li key={m.id} className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
+                <div className="min-w-0">
+                  <span className="capitalize text-sm">{m.source === "master" ? "Full mix" : m.source}</span>
+                  <p className="truncate font-mono text-xs text-muted-foreground">{m.path}</p>
+                </div>
                 <a href={`/api/audio/${m.path}`} download>
                   <Button variant="outline" size="sm" data-testid={`download-midi-${m.source}`}>
                     <Download className="size-4" /> MIDI
@@ -368,11 +415,13 @@ export function SongView({ id }: { id: string }) {
             onClick={() => midiMutation.mutate(midiSource)}
             disabled={midiMutation.isPending || !!midiJob}
           >
-            {midiJob
-              ? `Transcribing… ${Math.round((midiJob.progress ?? 0) * 100)}%`
-              : midiBySource.get(midiSource)
-                ? "Re-transcribe to MIDI"
-                : "Transcribe to MIDI"}
+            {midiJob && midiJob.midiSource === midiSource
+              ? "Transcribing…"
+              : midiJob
+                ? "Transcribing other source…"
+                : midiBySource.get(midiSource)
+                  ? "Re-transcribe to MIDI"
+                  : "Transcribe to MIDI"}
           </Button>
         </div>
       </section>

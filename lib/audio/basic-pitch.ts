@@ -128,8 +128,12 @@ export async function transcribeToMidi(
   fs.rmSync(workDir, { recursive: true, force: true });
   fs.mkdirSync(workDir, { recursive: true });
 
-  onProgress?.(0.1, "Transcribing to MIDI (CPU — approximate)...");
-  await runBasicPitch(inputAbs, workDir);
+  onProgress?.(0.15, "Loading Basic Pitch model (first run may take ~30s)...");
+  await runBasicPitch(inputAbs, workDir, (line) => {
+    if (line.includes("Predicting")) onProgress?.(0.35, "Analyzing audio…");
+    else if (line.includes("Creating midi")) onProgress?.(0.75, "Writing MIDI notes…");
+    else onProgress?.(0.5, "Transcribing (CPU)…");
+  });
   onProgress?.(0.9, "Collecting MIDI file...");
 
   const produced = fs
@@ -145,7 +149,11 @@ export async function transcribeToMidi(
   return destAbs;
 }
 
-function runBasicPitch(inputAbs: string, outDir: string): Promise<void> {
+function runBasicPitch(
+  inputAbs: string,
+  outDir: string,
+  onLine?: (line: string) => void,
+): Promise<void> {
   const bin = resolveBasicPitchBin();
   if (!bin) {
     return Promise.reject(new Error(`basic-pitch not available — ${INSTALL_HINT}`));
@@ -158,10 +166,20 @@ function runBasicPitch(inputAbs: string, outDir: string): Promise<void> {
     );
     let stderr = "";
     proc.stderr.on("data", (d: Buffer) => {
-      stderr += d.toString();
+      const chunk = d.toString();
+      stderr += chunk;
+      for (const line of chunk.split("\n")) {
+        const t = line.trim();
+        if (t) onLine?.(t);
+      }
     });
     proc.stdout.on("data", (d: Buffer) => {
-      stderr += d.toString();
+      const chunk = d.toString();
+      stderr += chunk;
+      for (const line of chunk.split("\n")) {
+        const t = line.trim();
+        if (t) onLine?.(t);
+      }
     });
     proc.on("error", (err) =>
       reject(new Error(`basic-pitch not available: ${err.message} (${INSTALL_HINT})`)),

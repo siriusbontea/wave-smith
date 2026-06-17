@@ -169,7 +169,8 @@ export class AceStepClient implements EngineClient {
       seed: req.seeds.slice(0, batchSize).join(","),
       // wav = 16-bit PCM 48 kHz master (M0-verified); mp3 derived via our ffmpeg.
       audio_format: "wav",
-      vocal_language: req.vocalLanguage ?? "en",
+      ...(req.lockVocalLanguage ? { use_cot_language: false } : {}),
+      vocal_language: req.vocalLanguage ?? (req.lyrics.trim() ? "unknown" : "en"),
     };
     if (req.durationS !== undefined) {
       // DiT-only path has no upper clamp server-side — clamp here (ENGINE_NOTES §3).

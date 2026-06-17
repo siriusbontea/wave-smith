@@ -13,7 +13,7 @@
 
 ## What you get
 
-- **Create** — natural-language prompts, 6 presets, Simple/Advanced tabs, 1–4 variations per forge
+- **Create** — natural-language prompts, 6 presets, Simple/Advanced tabs, 1–4 variations per forge; **multilingual lyrics** (50+ engine languages, auto prompt/lyrics splitting)
 - **Library** — grid/list, procedural cover art, favorites, search, export/import (JSON metadata)
 - **Playback** — one global player + waveform; seeking works (HTTP Range support)
 - **Stems** — Demucs separation → vocals / drums / bass / other + ZIP download
@@ -120,6 +120,22 @@ First engine warm-up after boot takes about **45 seconds** with weights already 
 2. Enter a prompt (or click a preset)
 3. Click **Forge** (default: 2 variations)
 4. Watch the queue strip; when done, open **Library** to play
+
+### Languages & lyrics
+
+ACE-Step supports **50+ vocal languages** (one language code per forge). Wavesmith helps get lyrics to the engine correctly:
+
+| Workflow | What happens |
+|----------|----------------|
+| **Simple tab** (prompt only) | Engine LM writes lyrics from your description (English by default unless the prompt strongly implies another language). |
+| **Advanced tab** (lyrics field) | Your lyrics pass through **verbatim** — best for custom text, explicit content, or a chosen language. |
+| **Lyrics embedded in the prompt** | If you paste `Verse 1:` / `[chorus]` / `Bridge:` blocks in the prompt with an empty lyrics field, Wavesmith **splits** style from sung text automatically (no Simple Mode rewrite). |
+| **Mixed languages** (e.g. English + Russian) | Detected as mixed → engine `unknown` + LM language override disabled. Quality is **best-effort** — true per-section code-switching is not supported by ACE-Step. |
+| **API** | `POST /api/generate` accepts optional `vocalLanguage` (`en`, `ru`, `ja`, … or aliases like `Russian`). |
+
+For a fully Russian (or Spanish, Japanese, etc.) vocal, put lyrics in **Advanced → Lyrics** and set `vocalLanguage` via the API until the UI picker ships.
+
+Optional **Generate Lyrics** (Ollama) honors a `language` field on `/api/lyrics` for drafting multilingual text before you forge.
 
 **Measured on M2 Max / 32 GB / macOS** (see `docs/ENGINE_NOTES.md`):
 
@@ -249,9 +265,20 @@ All variables are documented in [`.env.example`](.env.example). Common ones:
 |----------|---------|-------|
 | `PORT` | `3000` | App URL port |
 | `ENGINE_URL` | `http://127.0.0.1:8001` | ACE-Step REST API |
-| `DATA_DIR` | `./data` | Library DB + audio |
+| `DATA_DIR` | `./data` | Library DB + audio (see layout below) |
 | `MOCK_ENGINE` | `0` | Set `1` for demo mode |
 | `LYRICS_MODEL` | `dolphin3:8b` | Ollama tag for Generate Lyrics |
+
+### Where files live (`DATA_DIR`, default `./data`)
+
+| Path | Contents |
+|------|----------|
+| `data/wavesmith.db` | Library metadata (songs, jobs, stems, MIDI tracks) |
+| `data/audio/<song-id>/take.wav` | Master audio (+ cached `take.mp3`) |
+| `data/audio/<song-id>/stems/` | Demucs stems (`vocals`, `drums`, `bass`, `other`) |
+| `data/audio/<song-id>/midi/` | Basic Pitch MIDI exports (`master`, stem names) |
+
+**Settings → Storage** shows your data and audio directory paths on disk.
 
 ---
 

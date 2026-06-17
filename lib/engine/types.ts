@@ -50,6 +50,8 @@ export interface GenerateRequest {
   /** "2" | "3" | "4" | "6" per engine contract. */
   timeSignature?: string;
   vocalLanguage?: string;
+  /** When true, send use_cot_language:false so the engine LM keeps vocal_language. */
+  lockVocalLanguage?: boolean;
   /** Takes per call, 1–4 (engine has NO server-side clamp on MPS — we clamp). */
   batchSize: number;
   /** One explicit seed per take — reproducibility requires explicit seeds
