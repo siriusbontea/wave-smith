@@ -20,13 +20,21 @@ export function Waveform({ songId }: { songId: string }) {
     const media = playerAudio();
     if (!el || !media) return;
 
+    // Theme tokens are oklch() values. hsl(var(--token)) never resolved, so the
+    // wave was invisible. Canvas fillStyle accepts the computed oklch string.
+    const colors = () => {
+      const style = getComputedStyle(document.documentElement);
+      return {
+        waveColor: style.getPropertyValue("--muted-foreground").trim(),
+        progressColor: style.getPropertyValue("--primary").trim(),
+        cursorColor: style.getPropertyValue("--foreground").trim(),
+      };
+    };
     const ws = WaveSurfer.create({
       container: el,
       media,
       height: 96,
-      waveColor: "hsl(var(--muted-foreground) / 0.4)",
-      progressColor: "hsl(var(--primary))",
-      cursorColor: "hsl(var(--foreground))",
+      ...colors(),
       barWidth: 2,
       barGap: 1,
       barRadius: 2,
@@ -34,8 +42,13 @@ export function Waveform({ songId }: { songId: string }) {
       interact: true,
     });
     wsRef.current = ws;
+    const theme = new MutationObserver(() => {
+      ws.setOptions(colors());
+    });
+    theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
     return () => {
+      theme.disconnect();
       ws.destroy();
       wsRef.current = null;
     };

@@ -36,6 +36,17 @@ const EnvSchema = z.object({
     .transform((u) => u.replace(/\/+$/, "")),
   /** Ollama model tag for lyric writing. */
   LYRICS_MODEL: z.string().default("dolphin3:8b"),
+  /**
+   * Optional xAI model id for hybrid lyric planning. The key itself is NOT
+   * parsed here — lib/grok reads XAI_API_KEY at call time (or a gitignored
+   * file under DATA_DIR) so tests can set and unset it without reimporting.
+   */
+  XAI_MODEL: z.string().default("grok-4"),
+  XAI_API_BASE: z
+    .string()
+    .url()
+    .default("https://api.x.ai/v1")
+    .transform((u) => u.replace(/\/+$/, "")),
   /** Absolute path to the demucs CLI (optional; auto-detected from uv/Homebrew PATH). */
   DEMUCS_BIN: z.string().optional(),
   /** Absolute path to the basic-pitch CLI (optional; auto-detected like demucs). */

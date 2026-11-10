@@ -146,6 +146,7 @@ export class AceStepClient implements EngineClient {
   }
 
   async generate(req: GenerateRequest): Promise<{ taskId: string }> {
+    if (req.taskType === "repaint") return this.generateRepaint(req);
     const batchSize = Math.max(1, Math.min(4, req.batchSize));
     const payload: Record<string, unknown> = {
       prompt: req.prompt,
@@ -189,6 +190,57 @@ export class AceStepClient implements EngineClient {
     const taskId = body.data?.task_id;
     if (!taskId) {
       throw new Error(`Engine accepted the task but returned no task_id (code ${body.code})`);
+    }
+    return { taskId };
+  }
+
+  /**
+   * Section edit / extend. Turbo accepts task_type=repaint with an uploaded
+   * src_audio (ENGINE_NOTES). Multipart so the file doesn't have to already
+   * live in the engine's temp dir. use_cot_caption is off — the existing
+   * caption should not be rewritten out from under the kept audio.
+   */
+  private async generateRepaint(req: GenerateRequest): Promise<{ taskId: string }> {
+    if (!req.srcAudioPath) throw new Error("Repaint needs the original audio file");
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFileSync(req.srcAudioPath);
+    } catch {
+      throw new Error("Original audio is missing on disk — can't edit this song");
+    }
+    const ext = req.srcAudioPath.toLowerCase().endsWith(".mp3") ? ".mp3" : ".wav";
+    const form = new FormData();
+    form.append("src_audio", new Blob([new Uint8Array(bytes)]), `source${ext}`);
+    form.append("task_type", "repaint");
+    form.append("chunk_mask_mode", "explicit");
+    form.append("prompt", req.prompt);
+    form.append("lyrics", req.lyrics);
+    form.append("batch_size", "1");
+    form.append("use_random_seed", "false");
+    form.append("seed", String(req.seeds[0] ?? 0));
+    form.append("audio_format", "wav");
+    form.append("use_cot_caption", "false");
+    form.append("repaint_strength", String(req.repaintStrength ?? 0.75));
+    form.append("audio_cover_strength", "1");
+    if (req.repaintingStart !== undefined) form.append("repainting_start", String(req.repaintingStart));
+    if (req.repaintingEnd !== undefined) form.append("repainting_end", String(req.repaintingEnd));
+    if (req.durationS !== undefined) {
+      form.append("audio_duration", String(Math.max(10, Math.min(600, req.durationS))));
+    }
+    form.append("vocal_language", req.vocalLanguage ?? (req.lyrics.trim() ? "unknown" : "en"));
+    if (req.lockVocalLanguage) form.append("use_cot_language", "false");
+    if (req.bpm !== undefined) form.append("bpm", String(req.bpm));
+    if (req.keyScale) form.append("key_scale", req.keyScale);
+    if (req.timeSignature) form.append("time_signature", req.timeSignature);
+
+    const body = await this.request<{ task_id?: string }>("/release_task", {
+      method: "POST",
+      body: form,
+      timeoutMs: 60_000,
+    });
+    const taskId = body.data?.task_id;
+    if (!taskId) {
+      throw new Error(`Engine accepted the edit but returned no task_id (code ${body.code})`);
     }
     return { taskId };
   }

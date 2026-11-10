@@ -11,6 +11,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CoverArt } from "@/components/cover-art";
+import { SectionEditor } from "@/components/library/section-editor";
 import { Waveform } from "@/components/waveform";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -91,15 +92,17 @@ export function SongView({ id }: { id: string }) {
   const [keyScale, setKeyScale] = useState("");
   const [timeSig, setTimeSig] = useState<string>("");
   const [midiSource, setMidiSource] = useState<MidiSource>("master");
-
-  useEffect(() => {
-    if (!song) return;
+  const [formSongId, setFormSongId] = useState<string | null>(null);
+  // Reset the editor when the route loads a different song. Doing this during
+  // render (not in an effect) keeps unsaved edits if the same song refetches.
+  if (song && song.id !== formSongId) {
+    setFormSongId(song.id);
     setTitle(song.title);
     setLyrics(song.lyrics ?? "");
     setBpm(song.bpm != null ? String(song.bpm) : "");
     setKeyScale(song.keyScale ?? "");
     setTimeSig(song.timeSignature ?? "");
-  }, [song]);
+  }
 
   // Stage this song in the shared player without autoplay (waveform binds here).
   useEffect(() => {
@@ -260,6 +263,13 @@ export function SongView({ id }: { id: string }) {
       </div>
 
       <Waveform songId={song.id} />
+
+      <SectionEditor
+        songId={song.id}
+        durationS={song.durationS}
+        lyrics={lyrics}
+        onLyricsChange={setLyrics}
+      />
 
       <div className="flex items-center gap-4">
         <Label className="shrink-0 text-sm">Speed</Label>

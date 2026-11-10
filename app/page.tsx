@@ -8,14 +8,15 @@ import { QueueStrip } from "@/components/create/queue-strip";
 
 export default function CreatePage() {
   return (
-    <main className="flex flex-1 flex-col items-center px-4 py-10">
-      <div className="flex w-full max-w-2xl flex-col gap-6">
-        <div className="text-center">
-          <h1 className="text-3xl font-semibold tracking-tight">What do you want to hear?</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Describe it — Wavesmith forges full tracks with vocals, entirely on your machine.
-          </p>
-        </div>
+    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 px-4 py-8">
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Create</p>
+        <h1 className="mt-1 text-3xl font-semibold tracking-tight">Describe your song</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Forge a full track on this Mac, then open it in the library to edit a section or extend it.
+        </p>
+      </div>
+      <div className="flex flex-col gap-6">
         <CreateForm />
         <QueueStrip />
       </div>

@@ -8,6 +8,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Grid2x2, List, Upload } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { SongCard } from "@/components/library/song-card";
@@ -153,7 +154,7 @@ export function LibraryView() {
       ) : groups.length === 0 ? (
         <div className="py-16 text-center text-muted-foreground" data-testid="library-empty">
           {songs.length === 0 ? (
-            <>Nothing here yet — <a href="/" className="underline">forge your first song</a>.</>
+            <>Nothing here yet — <Link href="/" className="underline">forge your first song</Link>.</>
           ) : (
             "No songs match your filters."
           )}

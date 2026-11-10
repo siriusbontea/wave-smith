@@ -28,17 +28,29 @@ export async function GET() {
       console.warn(`[jobs] unparseable result on job ${row.id}`);
     }
     let midiSource: string | null = null;
-    if (row.type === "midi") {
-      try {
-        const payload = JSON.parse(row.payload) as { source?: string };
-        midiSource = payload.source ?? null;
-      } catch {
-        midiSource = null;
+    let editKind: "repaint" | "extend" | null = null;
+    let label = row.type === "stems" ? "Stems" : row.type === "midi" ? "MIDI" : "Forge";
+    try {
+      const payload = JSON.parse(row.payload) as {
+        source?: string;
+        edit?: { kind?: string };
+      };
+      if (row.type === "midi") midiSource = payload.source ?? null;
+      if (payload.edit?.kind === "repaint") {
+        editKind = "repaint";
+        label = "Section";
+      } else if (payload.edit?.kind === "extend") {
+        editKind = "extend";
+        label = "Extend";
       }
+    } catch {
+      midiSource = null;
     }
     return {
       id: row.id,
       type: row.type,
+      label,
+      editKind,
       status: row.status,
       progress: row.progress,
       stage: queue.stages.get(row.id) ?? null,

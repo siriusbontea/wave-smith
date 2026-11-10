@@ -86,7 +86,7 @@ export class MockEngineClient implements EngineClient {
       finalPrompt: `${task.req.prompt} (mock enhanced caption)`,
       finalLyrics,
       bpm: 100,
-      durationS: 10,
+      durationS: task.req.durationS ?? 10,
       keyScale: "C major",
       timeSignature: "4",
       seed: String(task.req.seeds[i] ?? i),

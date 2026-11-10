@@ -10,6 +10,7 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { getEngineClient } from "@/lib/engine";
+import { readGrokApiKey } from "@/lib/grok/secrets";
 import { getLyricsClient } from "@/lib/lyrics";
 import { env } from "@/lib/env";
 
@@ -47,6 +48,19 @@ export async function GET() {
     lyricsCache = { available, at: Date.now() };
   }
 
+  const grokKey = readGrokApiKey();
+  let mode: "local" | "grok" = "local";
+  let lyricsPolicy: "standard" | "unrestricted" = "standard";
+  if (dbOk) {
+    try {
+      const prefs = await import("@/lib/grok/mode");
+      mode = prefs.getConnectionMode();
+      lyricsPolicy = prefs.getLyricsPolicy();
+    } catch {
+      // A broken settings table must not take down the readiness probe.
+    }
+  }
+
   return NextResponse.json({
     app: "ok",
     version: "0.1.0",
@@ -54,6 +68,12 @@ export async function GET() {
     mockEngine: env.MOCK_ENGINE,
     engine,
     lyrics: { available: lyricsCache.available, model: env.LYRICS_MODEL },
+    connection: {
+      mode,
+      lyricsPolicy,
+      grokConfigured: grokKey.key != null,
+      grokKeySource: grokKey.source,
+    },
     timestamp: Date.now(),
   });
 }

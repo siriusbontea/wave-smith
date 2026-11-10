@@ -41,7 +41,7 @@ const STEPS = [
   },
   {
     title: "Library",
-    body: "Finished songs land in your Library — grouped variations, cover art, favorites, and search.",
+    body: "Finished songs land in your Library. Open one to play it, regenerate a section, or extend it.",
     path: "/library",
   },
   {

@@ -63,6 +63,70 @@ export const VOCAL_LANGUAGES = [
 
 export type VocalLanguage = (typeof VOCAL_LANGUAGES)[number];
 
+/** Display names for the Create-page language picker and Grok prompts. */
+export const VOCAL_LANGUAGE_LABELS: Record<VocalLanguage, string> = {
+  ar: "Arabic",
+  az: "Azerbaijani",
+  bg: "Bulgarian",
+  bn: "Bengali",
+  ca: "Catalan",
+  cs: "Czech",
+  da: "Danish",
+  de: "German",
+  el: "Greek",
+  en: "English",
+  es: "Spanish",
+  fa: "Persian",
+  fi: "Finnish",
+  fr: "French",
+  he: "Hebrew",
+  hi: "Hindi",
+  hr: "Croatian",
+  ht: "Haitian Creole",
+  hu: "Hungarian",
+  id: "Indonesian",
+  is: "Icelandic",
+  it: "Italian",
+  ja: "Japanese",
+  ko: "Korean",
+  la: "Latin",
+  lt: "Lithuanian",
+  ms: "Malay",
+  ne: "Nepali",
+  nl: "Dutch",
+  no: "Norwegian",
+  pa: "Punjabi",
+  pl: "Polish",
+  pt: "Portuguese",
+  ro: "Romanian",
+  ru: "Russian",
+  sa: "Sanskrit",
+  sk: "Slovak",
+  sr: "Serbian",
+  sv: "Swedish",
+  sw: "Swahili",
+  ta: "Tamil",
+  te: "Telugu",
+  th: "Thai",
+  tl: "Tagalog",
+  tr: "Turkish",
+  uk: "Ukrainian",
+  ur: "Urdu",
+  vi: "Vietnamese",
+  yue: "Cantonese",
+  zh: "Chinese",
+  unknown: "Mixed",
+};
+
+/** Sentence fragment for a lyric-writer prompt. Unknown means "don't force one language". */
+export function describeVocalLanguage(code: string | undefined): string {
+  const normalized = normalizeVocalLanguage(code);
+  if (!normalized || normalized === "unknown") {
+    return "the language of the user's prompt. If they mix languages, keep the mix — do not translate the whole song into one language";
+  }
+  return `${VOCAL_LANGUAGE_LABELS[normalized]} (language code ${normalized})`;
+}
+
 const VOCAL_LANGUAGE_SET = new Set<string>(VOCAL_LANGUAGES);
 
 /** Plain-language aliases users might pass before the UI picker exists. */

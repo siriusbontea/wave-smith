@@ -1,14 +1,21 @@
 /**
- * POST /api/lyrics — Generate Lyrics (spec §6.2/§9.2). Calls the LyricsClient
- * seam; 503 when the lyrics LLM is unavailable (the UI hides the button, but
- * a direct call still gets an honest answer).
+ * POST /api/lyrics — write lyrics (and, in Grok hybrid, a song plan).
  *
- * Calls are serialized via a module-level promise chain: the local LLM and the
- * engine LM share machine resources, and concurrent generations would contend.
+ * Local only is the default: Ollama when it is running, otherwise 503.
+ * Grok hybrid calls xAI first and falls back to the local writer on any
+ * failure. Unrestricted mode never calls Grok. This route does not filter
+ * lyric text on the local path.
+ *
+ * Calls are serialized: the local LLM and the engine LM share the machine.
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { GrokClient } from "@/lib/grok/client";
+import { grokAllowed, getConnectionMode, getLyricsPolicy } from "@/lib/grok/mode";
+import { friendlyGrokError } from "@/lib/grok/plan";
+import { readGrokApiKey } from "@/lib/grok/secrets";
 import { getLyricsClient } from "@/lib/lyrics";
+import type { LyricsBrief } from "@/lib/lyrics/types";
 
 export const dynamic = "force-dynamic";
 
@@ -39,24 +46,77 @@ export async function POST(req: Request) {
     );
   }
 
-  const client = getLyricsClient();
-  if (!(await client.available())) {
-    return NextResponse.json(
-      { error: "Lyrics LLM unavailable — is Ollama running with the configured model?" },
-      { status: 503 },
-    );
-  }
-
-  const run = chain.then(() => client.generateLyrics(parsed.data));
-  // Keep the chain alive even when a generation fails.
+  const brief: LyricsBrief = parsed.data;
+  const run = chain.then(() => writeLyrics(brief));
   chain = run.catch(() => undefined);
   try {
-    const lyrics = await run;
-    return NextResponse.json({ lyrics });
+    return NextResponse.json(await run);
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Lyric generation failed" },
-      { status: 502 },
-    );
+    const message = err instanceof Error ? err.message : "Lyric generation failed";
+    const status = /isn't running|isn't configured|no API key|Unrestricted/.test(message) ? 503 : 502;
+    return NextResponse.json({ error: message }, { status });
   }
+}
+
+async function writeLyrics(brief: LyricsBrief) {
+  const local = getLyricsClient();
+  const unrestrictedSkip =
+    getConnectionMode() === "grok" && getLyricsPolicy() === "unrestricted";
+
+  if (grokAllowed()) {
+    if (!readGrokApiKey().key) {
+      if (await local.available()) {
+        const lyrics = await local.generateLyrics(brief);
+        return {
+          lyrics,
+          source: "local" as const,
+          notice: "Grok hybrid is on, but no API key is set. Wrote lyrics locally instead.",
+          plan: null,
+        };
+      }
+      throw new Error(
+        "Grok hybrid is on, but no API key is set. The local lyrics writer isn't running — write the words yourself, switch to Local only, or add a key in Settings.",
+      );
+    }
+
+    try {
+      const plan = await new GrokClient().planLyrics(brief);
+      return {
+        lyrics: plan.lyrics,
+        source: "grok" as const,
+        notice: null,
+        plan,
+      };
+    } catch (err) {
+      if (await local.available()) {
+        const lyrics = await local.generateLyrics(brief);
+        return {
+          lyrics,
+          source: "local" as const,
+          notice: friendlyGrokError(err, true),
+          plan: null,
+        };
+      }
+      throw new Error(friendlyGrokError(err, false));
+    }
+  }
+
+  if (!(await local.available())) {
+    if (unrestrictedSkip) {
+      throw new Error(
+        "Unrestricted lyrics keeps Grok off, and the local lyrics writer isn't running. Write the words yourself, or turn unrestricted off.",
+      );
+    }
+    throw new Error("Lyrics LLM unavailable — is Ollama running with the configured model?");
+  }
+
+  const lyrics = await local.generateLyrics(brief);
+  return {
+    lyrics,
+    source: "local" as const,
+    notice: unrestrictedSkip
+      ? "Unrestricted lyrics stays on this machine — Grok is not used."
+      : null,
+    plan: null,
+  };
 }

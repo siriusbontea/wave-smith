@@ -18,7 +18,32 @@ import {
   expandSeeds,
   type GenerateJobPayload,
 } from "@/lib/queue";
+import { EXTEND_LENGTH_ERROR } from "@/lib/songs/extend-check";
 import { env } from "@/lib/env";
+
+function insertParentSong(): { id: string; abs: string } {
+  const id = crypto.randomUUID();
+  const rel = path.join(id, "take.mp3");
+  const abs = path.join(env.audioDir, rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.copyFileSync(path.resolve("public/demo-clip.mp3"), abs);
+  db.insert(schema.songs)
+    .values({
+      id,
+      title: "Night Drive",
+      prompt: "dreamy synthwave night drive",
+      lyrics: "[verse]\nNeon\n[chorus]\nDrive",
+      tags: "[]",
+      model: "mock",
+      variationGroupId: id,
+      audioPath: rel,
+      artSeed: "abc",
+      durationS: 30,
+      createdAt: Date.now(),
+    })
+    .run();
+  return { id, abs };
+}
 
 function payload(overrides: Partial<GenerateJobPayload> = {}): GenerateJobPayload {
   return {
@@ -359,6 +384,87 @@ describe("Queue (mock engine)", () => {
     const midi = db.select().from(schema.midiTracks).where(eq(schema.midiTracks.songId, songId)).all();
     expect(midi).toHaveLength(1);
     expect(midi[0]?.source).toBe("master");
+  });
+
+  it("repaints one section into a child song and keeps the original", async () => {
+    const parent = insertParentSong();
+    const spy = vi.spyOn(engine, "generate");
+    const jobId = queue.enqueue("generate", {
+      ...payload({ variations: 1, lyrics: "[verse]\nNeon\n[chorus]\nNew hook" }),
+      edit: {
+        kind: "repaint",
+        parentSongId: parent.id,
+        srcAudioPath: parent.abs,
+        repaintingStart: 4,
+        repaintingEnd: 8,
+        sectionLabel: "Chorus",
+      },
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe("succeeded");
+    const req = spy.mock.calls[0]![0];
+    expect(req.taskType).toBe("repaint");
+    expect(req.srcAudioPath).toBe(parent.abs);
+    expect(req.repaintingStart).toBe(4);
+    expect(req.repaintingEnd).toBe(8);
+    expect(req.simpleMode).toBe(false);
+    expect(req.batchSize).toBe(1);
+    const result = JSON.parse(job.result ?? "{}") as { songIds: string[]; editKind: string };
+    const child = db.select().from(schema.songs).where(eq(schema.songs.id, result.songIds[0]!)).get()!;
+    expect(child.parentSongId).toBe(parent.id);
+    expect(child.editKind).toBe("repaint");
+    expect(child.title).toContain("Chorus");
+    expect(db.select().from(schema.songs).where(eq(schema.songs.id, parent.id)).get()).toBeTruthy();
+  });
+
+  it("extends when the engine reports a longer duration", async () => {
+    const parent = insertParentSong();
+    const jobId = queue.enqueue("generate", {
+      ...payload({ variations: 1 }),
+      durationS: 45,
+      edit: {
+        kind: "extend",
+        parentSongId: parent.id,
+        srcAudioPath: parent.abs,
+        repaintingStart: 28,
+        repaintingEnd: 45,
+        targetDurationS: 45,
+        sectionLabel: "extended",
+      },
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe("succeeded");
+    const result = JSON.parse(job.result ?? "{}") as { songIds: string[] };
+    const child = db.select().from(schema.songs).where(eq(schema.songs.id, result.songIds[0]!)).get()!;
+    expect(child.editKind).toBe("extend");
+    expect(child.durationS).toBe(45);
+  });
+
+  it("fails an extend that did not grow, instead of saving the original length", async () => {
+    const parent = insertParentSong();
+    const original = engine.getTask.bind(engine);
+    engine.getTask = async (taskId) => {
+      const status = await original(taskId);
+      if (status.state === "succeeded") {
+        status.takes = status.takes.map((take) => ({ ...take, durationS: 10 }));
+      }
+      return status;
+    };
+    const jobId = queue.enqueue("generate", {
+      ...payload({ variations: 1 }),
+      durationS: 45,
+      edit: {
+        kind: "extend",
+        parentSongId: parent.id,
+        srcAudioPath: parent.abs,
+        repaintingStart: 28,
+        repaintingEnd: 45,
+        targetDurationS: 45,
+      },
+    });
+    const job = await waitForJob(jobId);
+    expect(job.status).toBe("failed");
+    expect(job.error).toBe(EXTEND_LENGTH_ERROR);
   });
 });
 

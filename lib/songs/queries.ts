@@ -29,6 +29,8 @@ export interface SongDTO {
   artSeed: string;
   favorite: boolean;
   createdAt: number;
+  parentSongId: string | null;
+  editKind: "repaint" | "extend" | null;
 }
 
 export function toDTO(row: Song): SongDTO {

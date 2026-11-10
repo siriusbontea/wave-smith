@@ -17,12 +17,12 @@ export const metadata: Metadata = {
     "Local-first AI music studio — describe a song, get full tracks with vocals. 100% on your machine.",
 };
 
-import Link from "next/link";
 import { Providers } from "@/components/providers";
 import { StatusBanner } from "@/components/status-banner";
 import { MiniPlayer } from "@/components/mini-player";
 import { KeyboardPlayer } from "@/components/keyboard-player";
 import { OnboardingTour } from "@/components/onboarding-tour";
+import { PageFrame, StudioNav } from "@/components/studio-nav";
 
 export default function RootLayout({
   children,
@@ -38,23 +38,8 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <Providers>
           <StatusBanner />
-          <header className="flex items-center justify-between border-b px-4 py-3">
-            <Link href="/" className="text-lg font-semibold tracking-tight">
-              Wavesmith
-            </Link>
-            <nav className="flex gap-4 text-sm">
-              <Link href="/" className="text-muted-foreground hover:text-foreground">
-                Create
-              </Link>
-              <Link href="/library" className="text-muted-foreground hover:text-foreground">
-                Library
-              </Link>
-              <Link href="/settings" className="text-muted-foreground hover:text-foreground">
-                Settings
-              </Link>
-            </nav>
-          </header>
-          <div className="flex flex-1 flex-col">{children}</div>
+          <StudioNav />
+          <PageFrame>{children}</PageFrame>
           <MiniPlayer />
           <KeyboardPlayer />
           <OnboardingTour />
