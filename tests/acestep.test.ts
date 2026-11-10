@@ -234,6 +234,51 @@ describe("AceStepClient.generate", () => {
     expect(body.use_cot_language).toBe(false);
   });
 
+  it("uploads source audio for a repaint instead of a JSON body", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-repaint-"));
+    const src = path.join(dir, "take.wav");
+    fs.writeFileSync(src, Buffer.from("RIFFdemo"));
+    stubFetchOnce(envelope({ task_id: "edit-1", status: "queued", queue_position: 1 }));
+    const client = new AceStepClient(BASE);
+    const { taskId } = await client.generate({
+      prompt: "keep the groove",
+      lyrics: "[chorus]\nNew line",
+      taskType: "repaint",
+      srcAudioPath: src,
+      repaintingStart: 10,
+      repaintingEnd: 18,
+      repaintStrength: 0.8,
+      vocalLanguage: "ja",
+      lockVocalLanguage: true,
+      batchSize: 2,
+      seeds: [7, 8],
+      durationS: 30,
+    });
+    expect(taskId).toBe("edit-1");
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(init.body).toBeInstanceOf(FormData);
+    const form = init.body as FormData;
+    expect(form.get("task_type")).toBe("repaint");
+    expect(form.get("chunk_mask_mode")).toBe("explicit");
+    expect(form.get("repainting_start")).toBe("10");
+    expect(form.get("repainting_end")).toBe("18");
+    expect(form.get("repaint_strength")).toBe("0.8");
+    expect(form.get("vocal_language")).toBe("ja");
+    expect(form.get("use_cot_language")).toBe("false");
+    expect(form.get("use_cot_caption")).toBe("false");
+    expect(form.get("batch_size")).toBe("1");
+    expect(form.get("seed")).toBe("7");
+    expect(form.get("audio_duration")).toBe("30");
+    expect(form.get("src_audio")).toBeTruthy();
+    const headers = new Headers(init.headers);
+    expect(headers.get("content-type")).toBeNull();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("defaults Simple Mode vocal language to en", async () => {
     stubFetchOnce(envelope({ task_id: "t", status: "queued", queue_position: 1 }));
     const client = new AceStepClient(BASE);

@@ -5,8 +5,10 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTheme } from "next-themes";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { forge } from "@/lib/client/api";
@@ -25,6 +27,13 @@ interface SettingsResponse {
   lyrics: { available: boolean; model: string };
   mockEngine: boolean;
   measuredGenerationS: number;
+  connection?: {
+    mode: "local" | "grok";
+    lyricsPolicy: "standard" | "unrestricted";
+    grokConfigured: boolean;
+    grokKeySource: "env" | "file" | "none";
+    grokModel: string;
+  };
 }
 
 function formatBytes(n: number): string {
@@ -61,6 +70,19 @@ export function SettingsView() {
   const themeMutation = useMutation({
     mutationFn: (t: string) => patchSettings({ theme: t }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["settings"] }),
+  });
+
+  const [keyDraft, setKeyDraft] = useState("");
+
+  const connectionMutation = useMutation({
+    mutationFn: (body: Record<string, unknown>) => patchSettings(body),
+    onSuccess: () => {
+      setKeyDraft("");
+      void queryClient.invalidateQueries({ queryKey: ["settings"] });
+      void queryClient.invalidateQueries({ queryKey: ["health"] });
+      toast.success("Saved");
+    },
+    onError: (err) => toast.error("Couldn't save", { description: err.message }),
   });
 
   const testForge = useMutation({
@@ -109,6 +131,90 @@ export function SettingsView() {
         >
           Run test generation
         </Button>
+      </section>
+
+      <section className="rounded-xl border bg-card p-4" data-testid="connection-settings">
+        <h2 className="font-medium">Connection</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Local only is the default and works with no network and no key. Grok hybrid can draft
+          lyrics and a tempo, key, and structure. The song itself is still forged here.
+        </p>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-1.5">
+            <Label htmlFor="connection-mode">Mode</Label>
+            <Select
+              value={data.connection?.mode ?? "local"}
+              onValueChange={(v) => connectionMutation.mutate({ connectionMode: v })}
+            >
+              <SelectTrigger id="connection-mode" data-testid="connection-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="local">Local only</SelectItem>
+                <SelectItem value="grok">Grok hybrid</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="lyrics-policy">Lyrics</Label>
+            <Select
+              value={data.connection?.lyricsPolicy ?? "standard"}
+              onValueChange={(v) => connectionMutation.mutate({ lyricsPolicy: v })}
+            >
+              <SelectTrigger id="lyrics-policy" data-testid="lyrics-policy">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="standard">Standard</SelectItem>
+                <SelectItem value="unrestricted">Unrestricted (local only)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        {data.connection?.lyricsPolicy === "unrestricted" ? (
+          <p className="mt-3 text-sm text-muted-foreground" role="status">
+            Unrestricted keeps Grok out of the path, even if hybrid is selected. Your lyrics go to
+            the local engine as written. Wavesmith does not add a content filter.
+          </p>
+        ) : null}
+        <div className="mt-4 grid gap-1.5">
+          <Label htmlFor="xai-key">xAI API key</Label>
+          <p className="text-xs text-muted-foreground">
+            {data.connection?.grokKeySource === "env"
+              ? "Using XAI_API_KEY from the environment. A key saved here is ignored until that variable is unset."
+              : data.connection?.grokConfigured
+                ? "A key is saved on this Mac (data/xai-api-key). It is never shown again."
+                : "Optional. Leave empty to stay fully offline. Not stored in git."}
+            {data.connection?.grokModel ? ` Model: ${data.connection.grokModel}.` : ""}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Input
+              id="xai-key"
+              type="password"
+              autoComplete="off"
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              placeholder={data.connection?.grokConfigured ? "Replace saved key" : "Paste key"}
+              className="max-w-sm"
+            />
+            <Button
+              variant="outline"
+              disabled={!keyDraft.trim() || connectionMutation.isPending}
+              onClick={() => connectionMutation.mutate({ xaiApiKey: keyDraft.trim() })}
+            >
+              Save key
+            </Button>
+            {data.connection?.grokKeySource === "file" ? (
+              <Button
+                variant="ghost"
+                disabled={connectionMutation.isPending}
+                onClick={() => connectionMutation.mutate({ clearXaiApiKey: true })}
+              >
+                Remove saved key
+              </Button>
+            ) : null}
+          </div>
+        </div>
       </section>
 
       <section className="rounded-xl border bg-card p-4">

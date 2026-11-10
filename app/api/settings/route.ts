@@ -6,6 +6,13 @@ import fs from "node:fs";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { env } from "@/lib/env";
+import {
+  getConnectionMode,
+  getLyricsPolicy,
+  setConnectionMode,
+  setLyricsPolicy,
+} from "@/lib/grok/mode";
+import { clearGrokApiKeyFile, readGrokApiKey, saveGrokApiKey } from "@/lib/grok/secrets";
 import { listSettings, setSetting } from "@/lib/settings/queries";
 import { getEngineClient } from "@/lib/engine";
 import { getLyricsClient } from "@/lib/lyrics";
@@ -35,8 +42,16 @@ export async function GET() {
     }));
   const lyricsAvailable = await getLyricsClient().available().catch(() => false);
   const settings = listSettings();
+  const grokKey = readGrokApiKey();
   return NextResponse.json({
     settings,
+    connection: {
+      mode: getConnectionMode(),
+      lyricsPolicy: getLyricsPolicy(),
+      grokConfigured: grokKey.key != null,
+      grokKeySource: grokKey.source,
+      grokModel: env.XAI_MODEL,
+    },
     paths: {
       dataDir: env.dataDir,
       audioDir: env.audioDir,
@@ -57,6 +72,11 @@ const PatchSchema = z
   .object({
     theme: z.enum(["dark", "light", "system"]).optional(),
     onboardingComplete: z.boolean().optional(),
+    connectionMode: z.enum(["local", "grok"]).optional(),
+    lyricsPolicy: z.enum(["standard", "unrestricted"]).optional(),
+    /** Stored only in the gitignored data dir. Empty string clears the file. */
+    xaiApiKey: z.string().max(500).optional(),
+    clearXaiApiKey: z.boolean().optional(),
   })
   .strict();
 
@@ -75,5 +95,9 @@ export async function PATCH(req: Request) {
   if (parsed.data.onboardingComplete !== undefined) {
     setSetting("onboarding_complete", parsed.data.onboardingComplete ? "1" : "0");
   }
+  if (parsed.data.connectionMode !== undefined) setConnectionMode(parsed.data.connectionMode);
+  if (parsed.data.lyricsPolicy !== undefined) setLyricsPolicy(parsed.data.lyricsPolicy);
+  if (parsed.data.clearXaiApiKey) clearGrokApiKeyFile();
+  if (parsed.data.xaiApiKey !== undefined) saveGrokApiKey(parsed.data.xaiApiKey);
   return NextResponse.json({ ok: true });
 }

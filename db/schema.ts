@@ -33,6 +33,10 @@ export const songs = sqliteTable("songs", {
   artSeed: text("art_seed").notNull(), // drives deterministic procedural cover art
   favorite: integer("favorite", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at").notNull(), // epoch ms
+  /** Source song when this row is a section repaint or an extend. Null for a fresh forge. */
+  parentSongId: text("parent_song_id"),
+  /** "repaint" rewrites a time range; "extend" asks turbo to continue past the end. */
+  editKind: text("edit_kind", { enum: ["repaint", "extend"] }),
 });
 
 export const jobs = sqliteTable("jobs", {

@@ -32,7 +32,9 @@ import { env } from "@/lib/env";
 import { separateStems } from "@/lib/audio/demucs";
 import { transcribeToMidi, type MidiSource } from "@/lib/audio/basic-pitch";
 import { getSong, listStemsForSong, songAudioAbsPath } from "@/lib/songs/queries";
+import { probeDurationSeconds } from "@/lib/audio/ffmpeg";
 import { prepareGenerateJob } from "@/lib/queue/prepare-generate";
+import { EXTEND_LENGTH_ERROR, extendGrew } from "@/lib/songs/extend-check";
 
 export { prepareGenerateJob } from "@/lib/queue/prepare-generate";
 export type { PreparedGenerateJob } from "@/lib/queue/prepare-generate";
@@ -50,6 +52,20 @@ export interface GenerateJobPayload {
   variations: number;
   /** Optional user seed — take i uses seed+i for reproducible variation sets. */
   seed?: number;
+  /**
+   * Section repaint or extend. The route fills srcAudioPath from the library
+   * row — clients never send a filesystem path.
+   */
+  edit?: {
+    kind: "repaint" | "extend";
+    parentSongId: string;
+    srcAudioPath: string;
+    repaintingStart: number;
+    repaintingEnd: number;
+    /** Absolute target length for extend. Omitted for an in-place repaint. */
+    targetDurationS?: number;
+    sectionLabel?: string;
+  };
 }
 
 /** Payload of a "stems" job — separate one song into four tracks. */
@@ -114,7 +130,7 @@ export class Queue {
         ? (payload as StemsJobPayload).songId
         : type === "midi"
           ? (payload as MidiJobPayload).songId
-          : null;
+          : ((payload as GenerateJobPayload).edit?.parentSongId ?? null);
     db.insert(schema.jobs)
       .values({
         id,
@@ -210,14 +226,26 @@ export class Queue {
     }
 
     // 2. Submit. One batched call per forge — N takes, one queue slot (M0 decision).
-    const variations = Math.max(1, Math.min(4, payload.variations));
+    const editing = payload.edit;
+    let parentTitle: string | null = null;
+    if (editing) {
+      const parent = getSong(editing.parentSongId);
+      if (!parent) throw new Error("Original song is gone — can't edit it.");
+      if (!fs.existsSync(editing.srcAudioPath)) {
+        throw new Error("Original audio is missing on disk — can't edit this song.");
+      }
+      parentTitle = parent.title;
+    }
+
+    const variations = editing ? 1 : Math.max(1, Math.min(4, payload.variations));
     const seeds = expandSeeds(payload.seed, variations);
     const forge = prepareGenerateJob(payload);
+    // Edits always send the lyric text (or the instrumental sentinel). Empty
+    // lyrics must not flip on Simple Mode — that would ignore the source audio.
     const req: GenerateRequest = {
       prompt: forge.prompt,
-      // Engine contract: "[inst]" requests an instrumental render (ENGINE_NOTES §3).
-      lyrics: payload.instrumental ? "[inst]" : forge.lyrics,
-      simpleMode: forge.simpleMode,
+      lyrics: payload.instrumental || (editing && !forge.lyrics.trim()) ? "[inst]" : forge.lyrics,
+      simpleMode: editing ? false : forge.simpleMode,
       durationS: payload.durationS,
       bpm: payload.bpm,
       keyScale: payload.keyScale,
@@ -226,6 +254,15 @@ export class Queue {
       lockVocalLanguage: forge.lockVocalLanguage,
       batchSize: variations,
       seeds,
+      ...(editing
+        ? {
+            taskType: "repaint" as const,
+            srcAudioPath: editing.srcAudioPath,
+            repaintingStart: editing.repaintingStart,
+            repaintingEnd: editing.repaintingEnd,
+            repaintStrength: editing.kind === "extend" ? 0.65 : 0.8,
+          }
+        : {}),
     };
     const { taskId } = await this.engine.generate(req);
 
@@ -292,10 +329,30 @@ export class Queue {
       throw err;
     }
 
+    let observedExtendS: number | null = null;
+    if (editing?.kind === "extend" && editing.targetDurationS) {
+      const probed = env.MOCK_ENGINE ? null : await probeDurationSeconds(staged[0]!.absPath);
+      const reported = status.takes[0]?.durationS ?? null;
+      if (
+        !extendGrew({
+          mockEngine: env.MOCK_ENGINE,
+          targetDurationS: editing.targetDurationS,
+          reportedDurationS: reported,
+          probedDurationS: probed,
+        })
+      ) {
+        for (const dir of createdDirs) fs.rmSync(dir, { recursive: true, force: true });
+        throw new Error(EXTEND_LENGTH_ERROR);
+      }
+      observedExtendS = !env.MOCK_ENGINE && probed != null ? probed : reported;
+    }
+
     const songIds: string[] = [];
     for (const [i, take] of status.takes.entries()) {
       const { songId, relPath } = staged[i]!;
-      const title = deriveTitle(forge.prompt, i, status.takes.length);
+      const title = editing
+        ? deriveEditTitle(parentTitle ?? forge.prompt, editing)
+        : deriveTitle(forge.prompt, i, status.takes.length);
       const tags = JSON.stringify(deriveTags(forge.prompt));
       db.insert(schema.songs)
         .values({
@@ -307,7 +364,7 @@ export class Queue {
           bpm: take.bpm !== null ? Math.round(take.bpm) : null,
           keyScale: take.keyScale,
           timeSignature: take.timeSignature,
-          durationS: take.durationS,
+          durationS: i === 0 && observedExtendS != null ? observedExtendS : take.durationS,
           // Our per-take seed, not the engine-reported one (belt: the client
           // also splits the batch seed_value, but ours is authoritative).
           seed: seeds[i] !== undefined ? String(seeds[i]) : (take.seed ?? null),
@@ -318,6 +375,8 @@ export class Queue {
           qualityScore: null, // not available over REST (M0)
           artSeed: artSeedFor(songId, title, tags),
           createdAt: Date.now(),
+          parentSongId: editing?.parentSongId ?? null,
+          editKind: editing?.kind ?? null,
         })
         .run();
       songIds.push(songId);
@@ -327,7 +386,13 @@ export class Queue {
       .set({
         status: "succeeded",
         progress: 1,
-        result: JSON.stringify({ songIds, variationGroupId }),
+        result: JSON.stringify({
+          songIds,
+          variationGroupId,
+          ...(editing
+            ? { parentSongId: editing.parentSongId, editKind: editing.kind }
+            : {}),
+        }),
         songId: songIds[0] ?? null,
         finishedAt: Date.now(),
       })
@@ -444,6 +509,16 @@ export function expandSeeds(seed: number | undefined, count: number): number[] {
     return Array.from({ length: count }, (_, i) => (seed + i) >>> 0);
   }
   return Array.from({ length: count }, () => crypto.randomInt(0, 0xffffffff));
+}
+
+/** Title for a section edit or extend, kept short enough for the library card. */
+export function deriveEditTitle(
+  parentTitle: string,
+  edit: NonNullable<GenerateJobPayload["edit"]>,
+): string {
+  const suffix = edit.kind === "extend" ? "extended" : (edit.sectionLabel?.trim() || "section");
+  const base = `${parentTitle} · ${suffix}`;
+  return base.length > 80 ? `${base.slice(0, 77)}...` : base;
 }
 
 /** Title from the user's prompt: first ~7 words, capitalized. Editable later (M4). */

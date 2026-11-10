@@ -7,6 +7,9 @@
 export interface JobView {
   id: string;
   type: "generate" | "stems" | "midi";
+  /** Forge, Stems, MIDI, Section, or Extend. */
+  label?: string;
+  editKind?: "repaint" | "extend" | null;
   status: "queued" | "running" | "succeeded" | "failed";
   progress: number | null;
   stage: string | null;
@@ -16,7 +19,12 @@ export interface JobView {
   /** Present for midi jobs while queued/running (from job payload). */
   midiSource?: "master" | "vocals" | "drums" | "bass" | "other" | null;
   result:
-    | { songIds: string[]; variationGroupId: string }
+    | {
+        songIds: string[];
+        variationGroupId: string;
+        parentSongId?: string;
+        editKind?: "repaint" | "extend";
+      }
     | { stemIds: string[]; songId: string }
     | { midiId: string; songId: string; source: string }
     | null;
@@ -37,6 +45,12 @@ export interface HealthView {
     loadedLmModel: string | null;
   };
   lyrics: { available: boolean; model: string };
+  connection?: {
+    mode: "local" | "grok";
+    lyricsPolicy: "standard" | "unrestricted";
+    grokConfigured: boolean;
+    grokKeySource: "env" | "file" | "none";
+  };
 }
 
 export interface EnhanceView {
@@ -69,6 +83,8 @@ export interface SongView {
   artSeed: string;
   favorite: boolean;
   createdAt: number;
+  parentSongId?: string | null;
+  editKind?: "repaint" | "extend" | null;
   stems?: StemView[];
   midi?: MidiView[];
 }
@@ -142,6 +158,7 @@ export interface ForgeParams {
   timeSignature?: "2" | "3" | "4" | "6";
   variations?: number;
   seed?: number;
+  vocalLanguage?: string;
 }
 
 export async function forge(params: ForgeParams): Promise<{ jobId: string }> {
@@ -153,17 +170,54 @@ export async function forge(params: ForgeParams): Promise<{ jobId: string }> {
   return jsonOrThrow<{ jobId: string }>(res);
 }
 
+export interface LyricsResult {
+  lyrics: string;
+  source: "grok" | "local";
+  notice: string | null;
+  plan: {
+    lyrics: string;
+    sections: string[];
+    bpm: number | null;
+    keyScale: string | null;
+    timeSignature: "2" | "3" | "4" | "6" | null;
+    styleTags: string[];
+    structure: string;
+  } | null;
+}
+
 export async function generateLyrics(params: {
   prompt: string;
   tags?: string[];
   explicit?: boolean;
-}): Promise<string> {
+  language?: string;
+  structureHints?: string;
+}): Promise<LyricsResult> {
   const res = await fetch("/api/lyrics", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
-  return (await jsonOrThrow<{ lyrics: string }>(res)).lyrics;
+  return jsonOrThrow<LyricsResult>(res);
+}
+
+export async function editSong(
+  songId: string,
+  body: {
+    action: "repaint" | "extend";
+    lyrics: string;
+    startS?: number;
+    endS?: number;
+    extendS?: number;
+    sectionLabel?: string;
+    vocalLanguage?: string;
+  },
+): Promise<{ jobId: string }> {
+  const res = await fetch(`/api/songs/${songId}/edit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow<{ jobId: string }>(res);
 }
 
 export async function enhance(params: {

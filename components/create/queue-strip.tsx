@@ -41,8 +41,17 @@ export function QueueStrip() {
       if (job.status === "succeeded") {
         if (job.type === "generate" && job.result && "songIds" in job.result) {
           const count = job.result.songIds.length;
-          toast.success(`Forged ${count} ${count === 1 ? "take" : "takes"}`, {
-            action: { label: "Open in Library", onClick: () => (window.location.href = "/library") },
+          const noun = job.editKind === "repaint" ? "section" : job.editKind === "extend" ? "extension" : count === 1 ? "take" : "takes";
+          const openHref = job.result.songIds[0]
+            ? `/library/${job.result.songIds[0]}`
+            : "/library";
+          toast.success(job.editKind ? `Saved a new ${noun}` : `Forged ${count} ${noun}`, {
+            action: {
+              label: "Open",
+              onClick: () => {
+                window.location.href = openHref;
+              },
+            },
           });
         } else if (job.type === "stems") {
           toast.success("Stems ready");
@@ -50,7 +59,7 @@ export function QueueStrip() {
           toast.success("MIDI ready");
         }
       } else {
-        toast.error("Forge failed", { description: job.error ?? undefined });
+        toast.error("Didn't finish", { description: job.error ?? undefined });
       }
     }
   }, [jobs]);
@@ -88,6 +97,9 @@ function JobRow({ job, queuePosition }: { job: JobView; queuePosition: number })
       data-testid={`job-${job.status}`}
       className="rounded-lg border bg-card px-4 py-3 text-sm"
     >
+      <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {job.label ?? "Job"}
+      </p>
       {job.status === "queued" && (
         <span className="text-muted-foreground">Queued (position {queuePosition})…</span>
       )}

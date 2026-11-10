@@ -46,6 +46,37 @@ export async function ensureMp3(wavAbsPath: string): Promise<string> {
   return mp3Path;
 }
 
+/**
+ * Duration in seconds via ffprobe. Null when ffprobe is missing or the file
+ * can't be read — callers decide whether a missing probe is fatal.
+ */
+export function probeDurationSeconds(filePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "csv=p=0",
+      filePath,
+    ]);
+    let out = "";
+    proc.stdout.on("data", (d: Buffer) => {
+      out += d.toString();
+    });
+    proc.on("error", () => resolve(null));
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        resolve(null);
+        return;
+      }
+      const n = Number(out.trim());
+      resolve(Number.isFinite(n) ? n : null);
+    });
+  });
+}
+
 /** Suggest a filesystem-safe download filename from a song title. */
 export function safeFilename(title: string, ext: string): string {
   const base = title

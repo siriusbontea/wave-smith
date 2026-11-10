@@ -78,6 +78,7 @@ export function SongCard({ song, view }: { song: SongView; view: "grid" | "list"
           <p className="truncate text-xs text-muted-foreground">
             {song.durationS ? formatTime(song.durationS) : "—"} · {formatDate(song.createdAt)}
             {song.bpm ? ` · ${song.bpm} bpm` : ""}
+            {song.editKind === "repaint" ? " · section edit" : song.editKind === "extend" ? " · extended" : ""}
           </p>
         </div>
         {FavButton}
@@ -102,6 +103,7 @@ export function SongCard({ song, view }: { song: SongView; view: "grid" | "list"
           <p className="truncate text-sm font-medium">{song.title}</p>
           <p className="truncate text-xs text-muted-foreground">
             {song.durationS ? formatTime(song.durationS) : "—"} · {formatDate(song.createdAt)}
+            {song.editKind === "repaint" ? " · section edit" : song.editKind === "extend" ? " · extended" : ""}
           </p>
         </div>
         {FavButton}

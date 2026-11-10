@@ -131,3 +131,15 @@ Takeaways: batch count dominates cost far more than duration; song-length scalin
 - Reference-audio upload (multipart `ref_audio`) exists at the REST layer (source-verified) — UI exposure deferred per spec §9.2; not live-tested in M0.
 - Batch semantics chosen: **one engine call with `batch_size=N`** per forge (N=1–4), not N serial calls — single queue slot, per-take seeds, one `variation_group_id`.
 - M0 gate evidence: `data/m0-evidence/` — `take_0.wav`/`take_1.wav` (synthwave, batch-2 distinct takes), `explicit_test.wav` (lyrics passthrough), `orchestral_180s.wav` (long render). Gitignored; listen to confirm vocal content.
+
+## 11. Repaint and extend (turbo, 2026-11-10)
+
+Pinned v0.1.8 `GenerateMusicRequest` accepts `task_type=repaint` with `src_audio` (multipart), `repainting_start`, `repainting_end`, and `chunk_mask_mode=explicit`. Turbo's supported tasks are `text2music | repaint | cover | cover-nofsq`. **`complete` (true continuation) needs pure `acestep-v15-base`**, which this app does not load.
+
+Wavesmith therefore:
+
+- Regenerates a section with `task_type=repaint`, caption CoT off (`use_cot_caption=false`), batch size 1, and the library file uploaded as `src_audio`.
+- Treats "extend" as a repaint whose end is past the source duration (2s overlap). After the file is saved, a non-mock job checks duration with ffprobe (falling back to the engine's reported duration). If it did not grow, the new files are deleted and the job fails with an explicit base-model message.
+- Does not implement vocal-only replacement. `cover` can restyle a whole mix; it does not keep an instrumental bed and swap only the vocal. That remains future work, and it would also unload the LM on MPS (see §8).
+
+Section boundaries are not in the REST response (no LRC, §7). The app estimates them from lyric tags.

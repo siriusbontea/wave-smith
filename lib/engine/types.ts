@@ -52,6 +52,20 @@ export interface GenerateRequest {
   vocalLanguage?: string;
   /** When true, send use_cot_language:false so the engine LM keeps vocal_language. */
   lockVocalLanguage?: boolean;
+  /**
+   * "repaint" rewrites a time range of srcAudioPath (turbo supports this).
+   * Omit for a normal text-to-music forge. Lengthening uses the same task
+   * with repaintingEnd past the source duration — see ENGINE_NOTES.
+   */
+  taskType?: "text2music" | "repaint";
+  /** Absolute path to the source mix. Required for repaint. Uploaded as src_audio. */
+  srcAudioPath?: string;
+  /** Repaint window start, seconds. */
+  repaintingStart?: number;
+  /** Repaint window end, seconds. Past the source length means "continue". */
+  repaintingEnd?: number;
+  /** 0–1. Higher values change the painted region more. */
+  repaintStrength?: number;
   /** Takes per call, 1–4 (engine has NO server-side clamp on MPS — we clamp). */
   batchSize: number;
   /** One explicit seed per take — reproducibility requires explicit seeds
