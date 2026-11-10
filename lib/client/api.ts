@@ -6,7 +6,7 @@
 
 export interface JobView {
   id: string;
-  type: "generate" | "stems" | "midi";
+  type: "generate" | "stems" | "midi" | "align";
   /** Forge, Stems, MIDI, Section, or Extend. */
   label?: string;
   editKind?: "repaint" | "extend" | null;
@@ -27,6 +27,7 @@ export interface JobView {
       }
     | { stemIds: string[]; songId: string }
     | { midiId: string; songId: string; source: string }
+    | { songId: string; source: "aligned" | "mock" }
     | null;
   createdAt: number;
   startedAt: number | null;
@@ -50,6 +51,11 @@ export interface HealthView {
     lyricsPolicy: "standard" | "unrestricted";
     grokConfigured: boolean;
     grokKeySource: "env" | "file" | "none";
+  };
+  extend?: {
+    model: string;
+    ready: boolean;
+    hint: string;
   };
 }
 
@@ -85,6 +91,15 @@ export interface SongView {
   createdAt: number;
   parentSongId?: string | null;
   editKind?: "repaint" | "extend" | null;
+  lyricTimings?: {
+    source: "aligned" | "mock";
+    lines: Array<{
+      text: string;
+      startS: number;
+      endS: number;
+      words: Array<{ text: string; startS: number; endS: number }>;
+    }>;
+  } | null;
   stems?: StemView[];
   midi?: MidiView[];
 }
@@ -198,6 +213,18 @@ export async function generateLyrics(params: {
     body: JSON.stringify(params),
   });
   return jsonOrThrow<LyricsResult>(res);
+}
+
+export async function alignLyrics(
+  songId: string,
+  vocalLanguage: string,
+): Promise<{ jobId: string }> {
+  const res = await fetch(`/api/songs/${songId}/align`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ vocalLanguage }),
+  });
+  return jsonOrThrow<{ jobId: string }>(res);
 }
 
 export async function editSong(

@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { extendGrew, EXTEND_LENGTH_ERROR } from "@/lib/songs/extend-check";
+import { mockTimings } from "@/lib/lyrics/timings";
 import {
   clampRepaintWindow,
   extendWindow,
   parseLyricSections,
   replaceSectionBody,
+  sectionsForTimeline,
 } from "@/lib/songs/sections";
 
 describe("lyric sections", () => {
@@ -43,6 +45,26 @@ describe("lyric sections", () => {
     const window = extendWindow(30, 15);
     expect(window).toEqual({ start: 28, end: 45, target: 45 });
   });
+
+  it("uses stored line times instead of the line-count estimate", () => {
+    const lyrics = "[verse]\nOne two\n[chorus]\nHook";
+    const estimated = parseLyricSections(lyrics, 30);
+    expect(estimated[1]!.startS).not.toBe(10);
+    const timings = mockTimings(lyrics, 30);
+    timings.lines[0] = { ...timings.lines[0]!, startS: 1, endS: 4, words: timings.lines[0]!.words };
+    timings.lines[1] = { ...timings.lines[1]!, startS: 10, endS: 14, words: timings.lines[1]!.words };
+    const timed = sectionsForTimeline(lyrics, 30, timings);
+    expect(timed.source).toBe("mock");
+    expect(timed.sections[1]!.startS).toBe(10);
+    expect(timed.sections[1]!.endS).toBe(14);
+    expect(timed.sections[1]!.lines?.[0]?.text).toBe("Hook");
+  });
+
+  it("falls back to tag estimates when timings do not match the lyrics", () => {
+    const timings = mockTimings("[verse]\nSomething else entirely", 30);
+    const timed = sectionsForTimeline("[verse]\nOne\n[chorus]\nHook", 30, timings);
+    expect(timed.source).toBe("estimated");
+  });
 });
 
 describe("extendGrew", () => {
@@ -66,6 +88,6 @@ describe("extendGrew", () => {
         probedDurationS: 30,
       }),
     ).toBe(false);
-    expect(EXTEND_LENGTH_ERROR).toMatch(/acestep-v15-base/);
+    expect(EXTEND_LENGTH_ERROR).toMatch(/not longer/);
   });
 });

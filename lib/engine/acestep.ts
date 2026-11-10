@@ -145,8 +145,28 @@ export class AceStepClient implements EngineClient {
     }
   }
 
+  async useDitModel(model: string): Promise<void> {
+    // Slot 1 is the only resident DiT. Switching replaces turbo with base (or
+    // the reverse) instead of keeping both loaded — see ENGINE_NOTES.
+    const body = await this.request<unknown>("/v1/init", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        slot: 1,
+        init_llm: true,
+        lm_model_path: env.ENGINE_INIT_LM_MODEL,
+      }),
+      timeoutMs: 900_000,
+    });
+    if (body.code !== 200) {
+      throw new Error(`Could not load ${model}: ${body.error ?? `code ${body.code}`}`);
+    }
+  }
+
   async generate(req: GenerateRequest): Promise<{ taskId: string }> {
     if (req.taskType === "repaint") return this.generateRepaint(req);
+    if (req.taskType === "complete") return this.generateComplete(req);
     const batchSize = Math.max(1, Math.min(4, req.batchSize));
     const payload: Record<string, unknown> = {
       prompt: req.prompt,
@@ -241,6 +261,58 @@ export class AceStepClient implements EngineClient {
     const taskId = body.data?.task_id;
     if (!taskId) {
       throw new Error(`Engine accepted the edit but returned no task_id (code ${body.code})`);
+    }
+    return { taskId };
+  }
+
+  /**
+   * True continuation. task_type=complete is base-only. v0.1.8 sizes the
+   * waveform to the uploaded file, so the caller pads a silent tail first.
+   * thinking stays off so the LM does not replace that audio with fresh codes.
+   */
+  private async generateComplete(req: GenerateRequest): Promise<{ taskId: string }> {
+    if (!req.srcAudioPath) throw new Error("Extend needs the original audio file");
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFileSync(req.srcAudioPath);
+    } catch {
+      throw new Error("Original audio is missing on disk — can't extend this song");
+    }
+    const ext = req.srcAudioPath.toLowerCase().endsWith(".mp3") ? ".mp3" : ".wav";
+    const form = new FormData();
+    form.append("src_audio", new Blob([new Uint8Array(bytes)]), `source${ext}`);
+    form.append("task_type", "complete");
+    form.append("model", req.ditModel ?? "acestep-v15-base");
+    form.append("instruction", "Complete the input track:");
+    form.append("prompt", req.prompt);
+    form.append("lyrics", req.lyrics);
+    form.append("batch_size", "1");
+    form.append("use_random_seed", "false");
+    form.append("seed", String(req.seeds[0] ?? 0));
+    form.append("audio_format", "wav");
+    form.append("thinking", "false");
+    form.append("use_cot_caption", "false");
+    form.append("use_cot_metas", "false");
+    form.append("inference_steps", String(req.inferenceSteps ?? 50));
+    form.append("guidance_scale", String(req.guidanceScale ?? 7));
+    form.append("audio_cover_strength", "1");
+    if (req.durationS !== undefined) {
+      form.append("audio_duration", String(Math.max(10, Math.min(600, req.durationS))));
+    }
+    form.append("vocal_language", req.vocalLanguage ?? (req.lyrics.trim() ? "unknown" : "en"));
+    if (req.lockVocalLanguage) form.append("use_cot_language", "false");
+    if (req.bpm !== undefined) form.append("bpm", String(req.bpm));
+    if (req.keyScale) form.append("key_scale", req.keyScale);
+    if (req.timeSignature) form.append("time_signature", req.timeSignature);
+
+    const body = await this.request<{ task_id?: string }>("/release_task", {
+      method: "POST",
+      body: form,
+      timeoutMs: 60_000,
+    });
+    const taskId = body.data?.task_id;
+    if (!taskId) {
+      throw new Error(`Engine accepted the extend but returned no task_id (code ${body.code})`);
     }
     return { taskId };
   }

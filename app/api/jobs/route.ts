@@ -29,7 +29,8 @@ export async function GET() {
     }
     let midiSource: string | null = null;
     let editKind: "repaint" | "extend" | null = null;
-    let label = row.type === "stems" ? "Stems" : row.type === "midi" ? "MIDI" : "Forge";
+    let label =
+      row.type === "stems" ? "Stems" : row.type === "midi" ? "MIDI" : row.type === "align" ? "Lyrics" : "Forge";
     try {
       const payload = JSON.parse(row.payload) as {
         source?: string;

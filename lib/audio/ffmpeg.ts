@@ -8,6 +8,7 @@
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 /** Run ffmpeg with the given args; resolve on exit 0, reject with stderr tail. */
@@ -75,6 +76,30 @@ export function probeDurationSeconds(filePath: string): Promise<number | null> {
       resolve(Number.isFinite(n) ? n : null);
     });
   });
+}
+
+/**
+ * Append silence so a Complete upload is already the target length.
+ * v0.1.8 does not pad `complete` itself (ENGINE_NOTES). Returns a temp wav
+ * the caller must delete.
+ */
+export async function padSilenceSeconds(inputAbs: string, padS: number): Promise<string> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-extend-"));
+  const out = path.join(dir, "padded.wav");
+  const dur = Math.max(0.1, padS).toFixed(3);
+  try {
+    await spawnFfmpeg(["-i", inputAbs, "-af", `apad=pad_dur=${dur}`, "-c:a", "pcm_s16le", out]);
+  } catch (err) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  return out;
+}
+
+/** Remove a file created by padSilenceSeconds, including its temp directory. */
+export function removePaddedFile(paddedAbs: string | null): void {
+  if (!paddedAbs) return;
+  fs.rmSync(path.dirname(paddedAbs), { recursive: true, force: true });
 }
 
 /** Suggest a filesystem-safe download filename from a song title. */

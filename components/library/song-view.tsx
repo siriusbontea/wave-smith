@@ -268,6 +268,7 @@ export function SongView({ id }: { id: string }) {
         songId={song.id}
         durationS={song.durationS}
         lyrics={lyrics}
+        timings={song.lyricTimings ?? null}
         onLyricsChange={setLyrics}
       />
 
@@ -329,8 +330,18 @@ export function SongView({ id }: { id: string }) {
             className="font-mono text-sm"
           />
           {song.lrc ? (
-            <p className="text-xs text-muted-foreground">Synced lyrics available (LRC).</p>
-          ) : null}
+            <p className="text-xs text-muted-foreground">
+              {song.lyricTimings?.source === "aligned"
+                ? "Word timings are saved with this song."
+                : song.lyricTimings?.source === "mock"
+                  ? "Demo timings are saved with this song."
+                  : "Synced lyrics available (LRC)."}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No word timings yet. Use Time the lyrics in Sections.
+            </p>
+          )}
         </div>
         <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
           Save changes

@@ -13,6 +13,7 @@ import { getEngineClient } from "@/lib/engine";
 import { readGrokApiKey } from "@/lib/grok/secrets";
 import { getLyricsClient } from "@/lib/lyrics";
 import { env } from "@/lib/env";
+import { BASE_DIT_MODEL, BASE_MODEL_MISSING, baseModelOnDisk } from "@/lib/engine/base-model";
 
 export const dynamic = "force-dynamic"; // health must never be statically cached
 
@@ -73,6 +74,15 @@ export async function GET() {
       lyricsPolicy,
       grokConfigured: grokKey.key != null,
       grokKeySource: grokKey.source,
+    },
+    extend: {
+      model: BASE_DIT_MODEL,
+      ready: env.MOCK_ENGINE || baseModelOnDisk(),
+      hint: env.MOCK_ENGINE
+        ? "Demo mode reports a longer file without loading base weights."
+        : baseModelOnDisk()
+          ? "Base weights are on disk. Extend loads them in place of turbo, then restores turbo."
+          : BASE_MODEL_MISSING,
     },
     timestamp: Date.now(),
   });

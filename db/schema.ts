@@ -3,9 +3,9 @@
  *
  * Four tables (spec §5, implemented exactly):
  *   songs    — one row per generated take; takes from one Forge click share a
- *              variation_group_id. `lrc` and `quality_score` exist in the schema
- *              but stay null: M0 verified the engine's REST API does not expose
- *              LRC or quality scoring (Gradio-UI-only features). See ENGINE_NOTES §7.
+ *              variation_group_id. `quality_score` stays null (Gradio-only).
+ *              `lrc` and `lyric_timings` are filled by the local aligner when it
+ *              runs; the engine REST API still does not return them. See ENGINE_NOTES §7.
  *   jobs     — queue persistence; survives app restarts. The in-process queue
  *              re-enqueues `queued` rows on boot and fails orphaned `running` rows.
  *   stems    — one row per Demucs-separated track (vocals|drums|bass|other).
@@ -28,20 +28,22 @@ export const songs = sqliteTable("songs", {
   model: text("model").notNull(), // engine DiT variant used (e.g. acestep-v15-turbo)
   variationGroupId: text("variation_group_id").notNull(), // groups takes from one Forge click
   audioPath: text("audio_path").notNull(), // relative to DATA_DIR/audio
-  lrc: text("lrc"), // timestamped lyrics — engine REST API does not provide (M0); stays null
+  lrc: text("lrc"), // line-timed LRC from the local aligner; null until a timing job succeeds
+  /** JSON LyricTimings (word + line). Null → the editor estimates cuts from tags. */
+  lyricTimings: text("lyric_timings"),
   qualityScore: real("quality_score"), // engine REST API does not provide (M0); stays null
   artSeed: text("art_seed").notNull(), // drives deterministic procedural cover art
   favorite: integer("favorite", { mode: "boolean" }).notNull().default(false),
   createdAt: integer("created_at").notNull(), // epoch ms
   /** Source song when this row is a section repaint or an extend. Null for a fresh forge. */
   parentSongId: text("parent_song_id"),
-  /** "repaint" rewrites a time range; "extend" asks turbo to continue past the end. */
+  /** "repaint" rewrites a time range; "extend" continues with the base model's complete task. */
   editKind: text("edit_kind", { enum: ["repaint", "extend"] }),
 });
 
 export const jobs = sqliteTable("jobs", {
   id: text("id").primaryKey(), // uuid
-  type: text("type", { enum: ["generate", "stems", "midi"] }).notNull(),
+  type: text("type", { enum: ["generate", "stems", "midi", "align"] }).notNull(),
   status: text("status", {
     enum: ["queued", "running", "succeeded", "failed"],
   }).notNull(),

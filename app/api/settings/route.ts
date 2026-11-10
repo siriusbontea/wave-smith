@@ -15,6 +15,7 @@ import {
 import { clearGrokApiKeyFile, readGrokApiKey, saveGrokApiKey } from "@/lib/grok/secrets";
 import { listSettings, setSetting } from "@/lib/settings/queries";
 import { getEngineClient } from "@/lib/engine";
+import { BASE_DIT_MODEL, baseModelOnDisk } from "@/lib/engine/base-model";
 import { getLyricsClient } from "@/lib/lyrics";
 
 export const dynamic = "force-dynamic";
@@ -64,6 +65,10 @@ export async function GET() {
     engine,
     lyrics: { available: lyricsAvailable, model: env.LYRICS_MODEL },
     mockEngine: env.MOCK_ENGINE,
+    extend: {
+      model: BASE_DIT_MODEL,
+      ready: env.MOCK_ENGINE || baseModelOnDisk(),
+    },
     measuredGenerationS: 22.4,
   });
 }

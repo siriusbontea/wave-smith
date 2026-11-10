@@ -279,6 +279,58 @@ describe("AceStepClient.generate", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("uploads a padded source for complete and asks for the base model", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ws-complete-"));
+    const src = path.join(dir, "padded.wav");
+    fs.writeFileSync(src, Buffer.from("RIFFdemo"));
+    stubFetchOnce(envelope({ task_id: "ext-1", status: "queued", queue_position: 1 }));
+    const client = new AceStepClient(BASE);
+    const { taskId } = await client.generate({
+      prompt: "keep going",
+      lyrics: "[outro]\nOne more",
+      taskType: "complete",
+      ditModel: "acestep-v15-base",
+      srcAudioPath: src,
+      inferenceSteps: 50,
+      guidanceScale: 7,
+      thinking: false,
+      vocalLanguage: "en",
+      lockVocalLanguage: true,
+      batchSize: 1,
+      seeds: [3],
+      durationS: 45,
+    });
+    expect(taskId).toBe("ext-1");
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const form = (fetchMock.mock.calls[0]![1] as RequestInit).body as FormData;
+    expect(form.get("task_type")).toBe("complete");
+    expect(form.get("model")).toBe("acestep-v15-base");
+    expect(form.get("thinking")).toBe("false");
+    expect(form.get("inference_steps")).toBe("50");
+    expect(form.get("guidance_scale")).toBe("7");
+    expect(form.get("audio_duration")).toBe("45");
+    expect(form.get("instruction")).toBe("Complete the input track:");
+    expect(form.get("repainting_start")).toBeNull();
+    expect(form.get("use_cot_language")).toBe("false");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("swaps slot 1 when loading a DiT", async () => {
+    stubFetchOnce(envelope({ message: "Model initialization completed" }));
+    const client = new AceStepClient(BASE);
+    await client.useDitModel("acestep-v15-base");
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("/v1/init");
+    const body = JSON.parse(init.body as string) as { model: string; slot: number; init_llm: boolean };
+    expect(body.model).toBe("acestep-v15-base");
+    expect(body.slot).toBe(1);
+    expect(body.init_llm).toBe(true);
+  });
+
   it("defaults Simple Mode vocal language to en", async () => {
     stubFetchOnce(envelope({ task_id: "t", status: "queued", queue_position: 1 }));
     const client = new AceStepClient(BASE);

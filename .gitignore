@@ -13,6 +13,9 @@ node_modules/
 # Engine clone (external pinned dependency) — anchored: lib/engine/ is app code!
 /engine/
 
+# Local lyric aligner (setup.sh). Not the app runtime.
+/.venv-align/
+
 # Env
 .env
 .env.local

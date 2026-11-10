@@ -30,11 +30,21 @@ import {
 } from "@/lib/engine/types";
 import { env } from "@/lib/env";
 import { separateStems } from "@/lib/audio/demucs";
+import { alignLyrics } from "@/lib/audio/align";
 import { transcribeToMidi, type MidiSource } from "@/lib/audio/basic-pitch";
 import { getSong, listStemsForSong, songAudioAbsPath } from "@/lib/songs/queries";
-import { probeDurationSeconds } from "@/lib/audio/ffmpeg";
+import { padSilenceSeconds, probeDurationSeconds, removePaddedFile } from "@/lib/audio/ffmpeg";
 import { prepareGenerateJob } from "@/lib/queue/prepare-generate";
 import { EXTEND_LENGTH_ERROR, extendGrew } from "@/lib/songs/extend-check";
+import {
+  BASE_DIT_MODEL,
+  BASE_GUIDANCE_SCALE,
+  BASE_INFERENCE_STEPS,
+  BASE_MODEL_MISSING,
+  TURBO_DIT_MODEL,
+  baseModelOnDisk,
+} from "@/lib/engine/base-model";
+import { timingsToLrc } from "@/lib/lyrics/timings";
 
 export { prepareGenerateJob } from "@/lib/queue/prepare-generate";
 export type { PreparedGenerateJob } from "@/lib/queue/prepare-generate";
@@ -79,6 +89,12 @@ export interface MidiJobPayload {
   source: MidiSource;
 }
 
+/** Payload of an "align" job — time the lyrics against the vocal or the mix. */
+export interface AlignJobPayload {
+  songId: string;
+  vocalLanguage: string;
+}
+
 export interface QueueOptions {
   engine?: EngineClient;
   /** Engine poll interval (default 1000 ms; tests use ~10 ms). */
@@ -120,9 +136,10 @@ export class Queue {
   enqueue(type: "generate", payload: GenerateJobPayload): string;
   enqueue(type: "stems", payload: StemsJobPayload): string;
   enqueue(type: "midi", payload: MidiJobPayload): string;
+  enqueue(type: "align", payload: AlignJobPayload): string;
   enqueue(
-    type: "generate" | "stems" | "midi",
-    payload: GenerateJobPayload | StemsJobPayload | MidiJobPayload,
+    type: "generate" | "stems" | "midi" | "align",
+    payload: GenerateJobPayload | StemsJobPayload | MidiJobPayload | AlignJobPayload,
   ): string {
     const id = crypto.randomUUID();
     const songId =
@@ -130,7 +147,9 @@ export class Queue {
         ? (payload as StemsJobPayload).songId
         : type === "midi"
           ? (payload as MidiJobPayload).songId
-          : ((payload as GenerateJobPayload).edit?.parentSongId ?? null);
+          : type === "align"
+            ? (payload as AlignJobPayload).songId
+            : ((payload as GenerateJobPayload).edit?.parentSongId ?? null);
     db.insert(schema.jobs)
       .values({
         id,
@@ -190,6 +209,8 @@ export class Queue {
         await this.runStems(job.id, JSON.parse(job.payload) as StemsJobPayload);
       } else if (job.type === "midi") {
         await this.runMidi(job.id, JSON.parse(job.payload) as MidiJobPayload);
+      } else if (job.type === "align") {
+        await this.runAlign(job.id, JSON.parse(job.payload) as AlignJobPayload);
       } else {
         throw new Error(`Unsupported job type: ${job.type}`);
       }
@@ -217,16 +238,52 @@ export class Queue {
     if (health.state === "offline") {
       throw new EngineOfflineError();
     }
-    // Warm up when EITHER component is missing: skipping warmUp while only the
-    // LM is unloaded would let the engine lazy-load the small 0.6B model
-    // instead of the pinned 1.7B (the silent-downgrade trap, ENGINE_NOTES §2).
-    if (!health.modelsInitialized || !health.llmInitialized) {
+
+    const editing = payload.edit;
+    const extending = editing?.kind === "extend";
+    // Extend swaps slot 1 to base (one DiT resident). A prior warmUp would
+    // load turbo only to unload it. useDitModel also pins the 1.7B LM.
+    let restoreTurbo = false;
+    let paddedPath: string | null = null;
+    if (extending) {
+      if (!env.MOCK_ENGINE && !baseModelOnDisk()) {
+        throw new Error(BASE_MODEL_MISSING);
+      }
+      this.stages.set(jobId, "Loading the base model for Extend. Turbo is unloaded so both are not in memory.");
+      await this.engine.useDitModel(BASE_DIT_MODEL);
+      restoreTurbo = true;
+    } else if (!health.modelsInitialized || !health.llmInitialized) {
+      // Warm up when EITHER component is missing: skipping warmUp while only the
+      // LM is unloaded would let the engine lazy-load the small 0.6B model
+      // instead of the pinned 1.7B (the silent-downgrade trap, ENGINE_NOTES §2).
       this.stages.set(jobId, "Warming up the engine (first run takes a minute)...");
       await this.engine.warmUp();
     }
 
-    // 2. Submit. One batched call per forge — N takes, one queue slot (M0 decision).
-    const editing = payload.edit;
+    try {
+      await this.runGenerateBody(jobId, payload, editing, extending, (filePath) => {
+        paddedPath = filePath;
+      });
+    } finally {
+      removePaddedFile(paddedPath);
+      if (restoreTurbo) {
+        this.stages.set(jobId, "Restoring the turbo model...");
+        try {
+          await this.engine.useDitModel(TURBO_DIT_MODEL);
+        } catch (err) {
+          console.error("[queue] failed to restore turbo after extend:", err);
+        }
+      }
+    }
+  }
+
+  private async runGenerateBody(
+    jobId: string,
+    payload: GenerateJobPayload,
+    editing: GenerateJobPayload["edit"],
+    extending: boolean,
+    rememberPad: (path: string) => void,
+  ): Promise<void> {
     let parentTitle: string | null = null;
     if (editing) {
       const parent = getSong(editing.parentSongId);
@@ -242,6 +299,19 @@ export class Queue {
     const forge = prepareGenerateJob(payload);
     // Edits always send the lyric text (or the instrumental sentinel). Empty
     // lyrics must not flip on Simple Mode — that would ignore the source audio.
+    let srcAudioPath = editing?.srcAudioPath;
+    if (extending && editing?.targetDurationS && srcAudioPath && !env.MOCK_ENGINE) {
+      const parent = getSong(editing.parentSongId);
+      const sourceDuration = parent?.durationS ?? 0;
+      const padS = editing.targetDurationS - sourceDuration;
+      if (padS > 0) {
+        this.stages.set(jobId, "Preparing the continuation...");
+        // v0.1.8 complete keeps the uploaded length. A silent tail is the canvas.
+        const padded = await padSilenceSeconds(srcAudioPath, padS);
+        rememberPad(padded);
+        srcAudioPath = padded;
+      }
+    }
     const req: GenerateRequest = {
       prompt: forge.prompt,
       lyrics: payload.instrumental || (editing && !forge.lyrics.trim()) ? "[inst]" : forge.lyrics,
@@ -254,13 +324,23 @@ export class Queue {
       lockVocalLanguage: forge.lockVocalLanguage,
       batchSize: variations,
       seeds,
-      ...(editing
+      ...(editing?.kind === "repaint"
         ? {
             taskType: "repaint" as const,
             srcAudioPath: editing.srcAudioPath,
             repaintingStart: editing.repaintingStart,
             repaintingEnd: editing.repaintingEnd,
-            repaintStrength: editing.kind === "extend" ? 0.65 : 0.8,
+            repaintStrength: 0.8,
+          }
+        : {}),
+      ...(extending && editing
+        ? {
+            taskType: "complete" as const,
+            ditModel: BASE_DIT_MODEL,
+            srcAudioPath,
+            inferenceSteps: BASE_INFERENCE_STEPS,
+            guidanceScale: BASE_GUIDANCE_SCALE,
+            thinking: false,
           }
         : {}),
     };
@@ -496,6 +576,50 @@ export class Queue {
         progress: 1,
         result: JSON.stringify({ midiId: id, songId: payload.songId, source: payload.source }),
         songId: payload.songId,
+        finishedAt: Date.now(),
+      })
+      .where(eq(schema.jobs.id, jobId))
+      .run();
+  }
+
+  private async runAlign(jobId: string, payload: AlignJobPayload): Promise<void> {
+    const song = getSong(payload.songId);
+    if (!song) throw new Error("Song not found — it may have been deleted.");
+    const lyrics = song.lyrics?.trim() ?? "";
+    if (!lyrics || lyrics === "[inst]" || lyrics === "[instrumental]") {
+      throw new Error("Add lyrics before timing them. Instrumentals have nothing to align.");
+    }
+    const vocals = listStemsForSong(payload.songId).find((stem) => stem.stemName === "vocals");
+    const audioAbs = vocals ? path.resolve(env.audioDir, vocals.path) : songAudioAbsPath(song);
+    if (!audioAbs || !fs.existsSync(audioAbs)) {
+      throw new Error("Audio is missing on disk — can't time the lyrics.");
+    }
+    this.stages.set(
+      jobId,
+      vocals
+        ? "Aligning lyrics to the vocal stem..."
+        : "Aligning lyrics to the mix (generate stems first for a cleaner vocal)...",
+    );
+    db.update(schema.jobs).set({ progress: 0.15 }).where(eq(schema.jobs.id, jobId)).run();
+    const timings = await alignLyrics({
+      audioAbs,
+      lyrics,
+      language: payload.vocalLanguage || "en",
+      durationS: song.durationS ?? 0,
+    });
+    db.update(schema.songs)
+      .set({
+        lyricTimings: JSON.stringify(timings),
+        lrc: timingsToLrc(timings),
+      })
+      .where(eq(schema.songs.id, song.id))
+      .run();
+    db.update(schema.jobs)
+      .set({
+        status: "succeeded",
+        progress: 1,
+        result: JSON.stringify({ songId: song.id, source: timings.source }),
+        songId: song.id,
         finishedAt: Date.now(),
       })
       .where(eq(schema.jobs.id, jobId))

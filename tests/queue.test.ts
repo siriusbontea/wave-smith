@@ -419,6 +419,7 @@ describe("Queue (mock engine)", () => {
 
   it("extends when the engine reports a longer duration", async () => {
     const parent = insertParentSong();
+    const spy = vi.spyOn(engine, "generate");
     const jobId = queue.enqueue("generate", {
       ...payload({ variations: 1 }),
       durationS: 45,
@@ -434,10 +435,17 @@ describe("Queue (mock engine)", () => {
     });
     const job = await waitForJob(jobId);
     expect(job.status).toBe("succeeded");
+    const req = spy.mock.calls[0]![0];
+    expect(req.taskType).toBe("complete");
+    expect(req.ditModel).toBe("acestep-v15-base");
+    expect(req.thinking).toBe(false);
+    expect(req.inferenceSteps).toBe(50);
+    expect(engine.ditLoads).toEqual(["acestep-v15-base", "acestep-v15-turbo"]);
     const result = JSON.parse(job.result ?? "{}") as { songIds: string[] };
     const child = db.select().from(schema.songs).where(eq(schema.songs.id, result.songIds[0]!)).get()!;
     expect(child.editKind).toBe("extend");
     expect(child.durationS).toBe(45);
+    expect(child.model).toBe("acestep-v15-base");
   });
 
   it("fails an extend that did not grow, instead of saving the original length", async () => {
@@ -465,6 +473,18 @@ describe("Queue (mock engine)", () => {
     const job = await waitForJob(jobId);
     expect(job.status).toBe("failed");
     expect(job.error).toBe(EXTEND_LENGTH_ERROR);
+    expect(engine.ditLoads).toEqual(["acestep-v15-base", "acestep-v15-turbo"]);
+  });
+
+  it("stores demo lyric timings without the aligner", async () => {
+    const parent = insertParentSong();
+    const job = await waitForJob(queue.enqueue("align", { songId: parent.id, vocalLanguage: "en" }));
+    expect(job.status).toBe("succeeded");
+    const row = db.select().from(schema.songs).where(eq(schema.songs.id, parent.id)).get()!;
+    expect(row.lrc).toMatch(/\[\d{2}:\d{2}\.\d{2}\]/);
+    const timings = JSON.parse(row.lyricTimings ?? "{}") as { source: string; lines: unknown[] };
+    expect(timings.source).toBe("mock");
+    expect(timings.lines.length).toBe(2);
   });
 });
 

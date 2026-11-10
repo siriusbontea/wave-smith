@@ -57,6 +57,8 @@ export function QueueStrip() {
           toast.success("Stems ready");
         } else if (job.type === "midi") {
           toast.success("MIDI ready");
+        } else if (job.type === "align") {
+          toast.success("Lyrics timed");
         }
       } else {
         toast.error("Didn't finish", { description: job.error ?? undefined });
@@ -129,6 +131,9 @@ function JobRow({ job, queuePosition }: { job: JobView; queuePosition: number })
       )}
       {job.status === "succeeded" && job.type === "midi" && (
         <span>MIDI transcribed — open the song to download.</span>
+      )}
+      {job.status === "succeeded" && job.type === "align" && (
+        <span>Lyrics timed — section cuts follow those words.</span>
       )}
       {job.status === "failed" && (
         <span className="text-destructive">{job.error ?? "Forge failed"}</span>

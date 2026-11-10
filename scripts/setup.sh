@@ -80,6 +80,30 @@ if [[ $WEIGHTS_OK -eq 0 ]]; then
 fi
 ok "Model weights present"
 
+# Base DiT is only for Extend (task_type=complete). Turbo stays the default forge.
+# Non-fatal: a failed download leaves Extend disabled and everything else working.
+BASE_WEIGHT="$ENGINE_DIR/checkpoints/acestep-v15-base/model.safetensors"
+if [[ ! -f "$BASE_WEIGHT" ]]; then
+  echo "Downloading acestep-v15-base (~4.7 GB) for Extend..."
+  (cd "$ENGINE_DIR" && unset VIRTUAL_ENV && uv run acestep-download -m acestep-v15-base) || \
+    warn "acestep-v15-base download failed — Extend stays unavailable until weights are present. Turbo forge still works."
+fi
+if [[ -f "$BASE_WEIGHT" ]]; then ok "Base model weights present (Extend)"; else warn "Base model not downloaded (Extend disabled)"; fi
+
+# Lyric aligner: stable-ts + Whisper, CPU, offline after the first weight download.
+ALIGN_VENV="$ROOT/.venv-align"
+if [[ ! -x "$ALIGN_VENV/bin/python" ]] || ! "$ALIGN_VENV/bin/python" -c "import stable_whisper" >/dev/null 2>&1; then
+  echo "Installing the lyric aligner (stable-ts, CPU)..."
+  uv venv "$ALIGN_VENV" --python 3.12 && \
+    uv pip install --python "$ALIGN_VENV/bin/python" "stable-ts" || \
+    warn "lyric aligner install failed — section times stay estimated until .venv-align exists"
+fi
+if [[ -x "$ALIGN_VENV/bin/python" ]] && "$ALIGN_VENV/bin/python" -c "import stable_whisper" >/dev/null 2>&1; then
+  ok "Lyric aligner available"
+else
+  warn "Lyric aligner not available (section times stay estimated)"
+fi
+
 # ── 6. Demucs (stems, M5) — pinned: demucs 4.0.1 needs torchaudio<2.9 (load/save APIs) ──
 if ! demucs --help >/dev/null 2>&1; then
   echo "Installing demucs (pinned, Python 3.12 + soundfile for WAV I/O)..."

@@ -30,6 +30,8 @@ APP_PORT="${PORT:-3000}"
 # Pin the LM the engine loads — without this, an un-pre-warmed lazy init would
 # silently pick the 0.6B model (ENGINE_NOTES §2/§8).
 ENGINE_INIT_LM_MODEL="${ENGINE_INIT_LM_MODEL:-acestep-5Hz-lm-1.7B}"
+# Do not set ACESTEP_CONFIG_PATH2. A second slot would keep turbo and base
+# resident together. Extend swaps slot 1, then swaps back (ENGINE_NOTES §11).
 
 if [[ ! -d "$ENGINE_DIR/.venv" ]]; then
   echo "Engine not set up — run scripts/setup.sh first." >&2

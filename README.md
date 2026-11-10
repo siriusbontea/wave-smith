@@ -191,15 +191,16 @@ If you are offline, the key is missing, the API errors, or Grok refuses, Wavesmi
 Open a song from the library.
 
 - **Regenerate a section** — rewrites that time range with the lyrics in the editor and keeps the audio outside it. This is ACE-Step turbo `repaint` (`chunk_mask_mode=explicit`). A new song is saved; the original remains.
-- **Extend** — asks turbo to continue past the ending (repaint window runs past the current duration, default overlap of the last 2 seconds). Pick +15s or +30s and optional new section lyrics.
+- **Extend** — continues the song with the base model’s `complete` task. Pick +15s or +30s and optional new section lyrics. Turbo is unloaded for that job (one model in memory), then loaded again. The first Extend after setup is slower: base uses 50 steps and classifier-free guidance.
+- **Time the lyrics** — places each sung line and word on the timeline so Regenerate cuts there. It uses a local Whisper aligner (`stable-ts`) on the vocal stem when you have one, otherwise the full mix. If the aligner is not installed, or the timings no longer match the text, cuts fall back to lyric-tag estimates.
 
-Section times are **estimated from lyric tags** (`[verse]`, `[chorus]`, …). The engine REST API does not return word timings, so the cut is approximate. A song with no tags regenerates the middle and keeps the intro and ending.
+`./scripts/setup.sh` downloads `acestep-v15-base` (~4.7 GB, next to turbo) and creates `.venv-align`. If the base weights are missing, Extend explains how to finish setup and does not start the job. New songs still use turbo.
 
-**If extend does not actually get longer, the job fails** and nothing new is saved. True continuation is ACE-Step’s `complete` task, which needs the `acestep-v15-base` model. This app loads **turbo** only (`text2music`, `repaint`, `cover`). Turbo repaint is what we can run; we do not pretend a same-length file is an extension.
+**If extend does not actually get longer, the job fails** and nothing new is saved. The pinned engine sizes `complete` to the file you upload, so Wavesmith appends the requested silence and asks the base model to complete that tail. A result that is not longer is discarded.
 
-**Not in this pass:** swapping new vocals over an untouched instrumental. Repaint rewrites the whole time range (melody and accompaniment), not the vocal stem alone.
+**Not in this pass:** swapping new vocals over an untouched instrumental. Repaint rewrites the whole time range (melody and accompaniment), not the vocal stem alone. ACE-Step’s own lyric timestamps need generation latents that the REST API does not return, so timings come from the local aligner instead.
 
-Demo mode (`MOCK_ENGINE=1`) completes these jobs with the bundled clip so you can walk the UI. It does not render a real longer waveform.
+Demo mode (`MOCK_ENGINE=1`) completes these jobs with the bundled clip and even demo timings. It does not load base weights or render a real longer waveform.
 
 ---
 
@@ -366,7 +367,7 @@ If you distribute modified versions of Wavesmith, the GPL v3 requires you to pro
 
 ## Roadmap
 
-Still open: vocal-only swap, `acestep-v15-base` so Extend can use the real `complete` task, word-level timings (LRC is not in the REST API), engine-native stems, LoRA UI, voice-to-prompt, SSE job updates, Tauri desktop wrap — see spec §14 in `wavesmith-claude-code-spec.md`.
+Still open: vocal-only swap, engine-native stems, LoRA UI, voice-to-prompt, SSE job updates, Tauri desktop wrap — see spec §14 in `wavesmith-claude-code-spec.md`. Extend uses base `complete` (with a silence-tail upload, because v0.1.8 does not pad that task). Lyric timings are local forced alignment, not ACE-Step LRC.
 
 ---
 
