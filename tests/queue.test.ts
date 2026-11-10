@@ -18,7 +18,8 @@ import {
   expandSeeds,
   type GenerateJobPayload,
 } from "@/lib/queue";
-import { EXTEND_LENGTH_ERROR } from "@/lib/songs/extend-check";
+import { DEMO_EDIT_NOTE } from "@/lib/songs/extend-check";
+import { DEMO_CLIP_DURATION_S } from "@/lib/engine/mock";
 import { env } from "@/lib/env";
 
 function insertParentSong(): { id: string; abs: string } {
@@ -409,17 +410,23 @@ describe("Queue (mock engine)", () => {
     expect(req.repaintingEnd).toBe(8);
     expect(req.simpleMode).toBe(false);
     expect(req.batchSize).toBe(1);
-    const result = JSON.parse(job.result ?? "{}") as { songIds: string[]; editKind: string };
-    const child = db.select().from(schema.songs).where(eq(schema.songs.id, result.songIds[0]!)).get()!;
-    expect(child.parentSongId).toBe(parent.id);
-    expect(child.editKind).toBe("repaint");
-    expect(child.title).toContain("Chorus");
-    expect(db.select().from(schema.songs).where(eq(schema.songs.id, parent.id)).get()).toBeTruthy();
+    const result = JSON.parse(job.result ?? "{}") as { demoUnchanged?: boolean; message?: string };
+    expect(result.demoUnchanged).toBe(true);
+    expect(result.message).toBe(DEMO_EDIT_NOTE);
+    expect(db.select().from(schema.songs).all()).toHaveLength(1);
   });
 
   it("extends when the engine reports a longer duration", async () => {
     const parent = insertParentSong();
     const spy = vi.spyOn(engine, "generate");
+    const original = engine.getTask.bind(engine);
+    engine.getTask = async (taskId) => {
+      const status = await original(taskId);
+      if (status.state === "succeeded") {
+        status.takes = status.takes.map((take) => ({ ...take, durationS: 45 }));
+      }
+      return status;
+    };
     const jobId = queue.enqueue("generate", {
       ...payload({ variations: 1 }),
       durationS: 45,
@@ -448,6 +455,44 @@ describe("Queue (mock engine)", () => {
     expect(child.model).toBe("acestep-v15-base");
   });
 
+  it("stores the sample length, not the requested length", async () => {
+    const job = await waitForJob(queue.enqueue("generate", payload({ durationS: 120, variations: 1 })));
+    expect(job.status).toBe("succeeded");
+    const result = JSON.parse(job.result ?? "{}") as { songIds: string[] };
+    const song = db.select().from(schema.songs).where(eq(schema.songs.id, result.songIds[0]!)).get()!;
+    expect(song.durationS).toBe(DEMO_CLIP_DURATION_S);
+  });
+
+  it("does not save a demo extend that did not grow", async () => {
+    const parent = insertParentSong();
+    const before = db.select().from(schema.songs).all().length;
+    const job = await waitForJob(
+      queue.enqueue("generate", {
+        ...payload({ variations: 1 }),
+        durationS: 45,
+        edit: {
+          kind: "extend",
+          parentSongId: parent.id,
+          srcAudioPath: parent.abs,
+          repaintingStart: 8,
+          repaintingEnd: 45,
+          targetDurationS: 45,
+        },
+      }),
+    );
+    expect(job.status).toBe("succeeded");
+    const result = JSON.parse(job.result ?? "{}") as { demoUnchanged?: boolean };
+    expect(result.demoUnchanged).toBe(true);
+    expect(db.select().from(schema.songs).all()).toHaveLength(before);
+  });
+
+  it("returns the in-flight job when the same payload is enqueued twice", () => {
+    const first = queue.enqueue("generate", payload());
+    const second = queue.enqueue("generate", payload());
+    expect(second).toBe(first);
+    expect(db.select().from(schema.jobs).all()).toHaveLength(1);
+  });
+
   it("fails an extend that did not grow, instead of saving the original length", async () => {
     const parent = insertParentSong();
     const original = engine.getTask.bind(engine);
@@ -471,8 +516,10 @@ describe("Queue (mock engine)", () => {
       },
     });
     const job = await waitForJob(jobId);
-    expect(job.status).toBe("failed");
-    expect(job.error).toBe(EXTEND_LENGTH_ERROR);
+    expect(job.status).toBe("succeeded");
+    const result = JSON.parse(job.result ?? "{}") as { demoUnchanged?: boolean; songIds?: string[] };
+    expect(result.demoUnchanged).toBe(true);
+    expect(result.songIds ?? []).toHaveLength(0);
     expect(engine.ditLoads).toEqual(["acestep-v15-base", "acestep-v15-turbo"]);
   });
 

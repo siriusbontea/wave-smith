@@ -168,7 +168,7 @@ Wavesmith applies **no content filtering** to user-supplied lyrics — same as a
 
 ## Optional: Grok hybrid (lyrics and a song plan only)
 
-Audio generation stays on this Mac. Grok is off unless you turn it on.
+Audio generation stays on this computer. Grok is off unless you turn it on.
 
 1. Settings → Connection → **Grok hybrid**
 2. Provide a key in one of these ways (never commit it):
@@ -200,7 +200,7 @@ Open a song from the library.
 
 **Not in this pass:** swapping new vocals over an untouched instrumental. Repaint rewrites the whole time range (melody and accompaniment), not the vocal stem alone. ACE-Step’s own lyric timestamps need generation latents that the REST API does not return, so timings come from the local aligner instead.
 
-Demo mode (`MOCK_ENGINE=1`) completes these jobs with the bundled clip and even demo timings. It does not load base weights or render a real longer waveform.
+Demo mode (`MOCK_ENGINE=1`) plays one short sample for every song. The length on screen is that file, not the length you picked. Section edits and Extend do not save a new song, and they say so. Stems are copies of the sample, kept as MP3. The notes file is a bundled sample, labeled as such. Word times are estimates.
 
 ---
 
@@ -216,7 +216,7 @@ pnpm install   # if you skipped full setup
 pnpm dev --hostname 127.0.0.1 --port 3000
 ```
 
-Forge completes instantly using the bundled `public/demo-clip.mp3`.
+Forge completes instantly using the bundled `public/demo-clip.mp3` (about 10 seconds). The library shows that length. A header badge says it is demo mode.
 
 ---
 

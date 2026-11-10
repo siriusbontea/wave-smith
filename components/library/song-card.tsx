@@ -24,6 +24,10 @@ export function SongCard({ song, view }: { song: SongView; view: "grid" | "list"
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["songs"] }),
   });
 
+  const take = song.title.match(/^(.*) \(take (\d+)\)$/);
+  const displayTitle = take?.[1] ?? song.title;
+  const takeLabel = take ? `Take ${take[2]}` : null;
+
   const playerSong = {
     id: song.id,
     title: song.title,
@@ -62,52 +66,59 @@ export function SongCard({ song, view }: { song: SongView; view: "grid" | "list"
     </button>
   );
 
+  const meta = (
+    <p className="truncate text-xs text-muted-foreground">
+      {song.durationS ? formatTime(song.durationS) : "—"} · {formatDate(song.createdAt)}
+      {song.bpm ? ` · ${song.bpm} bpm` : ""}
+      {song.editKind === "repaint" ? " · section edit" : song.editKind === "extend" ? " · extended" : ""}
+    </p>
+  );
+
   if (view === "list") {
     return (
-      <Link
-        href={`/library/${song.id}`}
-        data-testid="song-item"
+      <div
         className="flex items-center gap-3 rounded-lg border bg-card px-3 py-2 hover:bg-accent/40"
       >
-        <div className="relative shrink-0">
-          <CoverArt seed={song.artSeed} className="size-12 rounded" />
-        </div>
+        <CoverArt seed={song.artSeed} className="size-12 shrink-0 rounded" />
         {PlayButton}
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{song.title}</p>
-          <p className="truncate text-xs text-muted-foreground">
-            {song.durationS ? formatTime(song.durationS) : "—"} · {formatDate(song.createdAt)}
-            {song.bpm ? ` · ${song.bpm} bpm` : ""}
-            {song.editKind === "repaint" ? " · section edit" : song.editKind === "extend" ? " · extended" : ""}
+        <Link href={`/library/${song.id}`} data-testid="song-item" className="min-w-0 flex-1">
+          <p className="flex items-center gap-2 text-sm font-medium">
+            <span className="truncate">{displayTitle}</span>
+            {takeLabel ? (
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs">{takeLabel}</span>
+            ) : null}
           </p>
-        </div>
+          {meta}
+        </Link>
         {FavButton}
-      </Link>
+      </div>
     );
   }
 
   return (
-    <Link
-      href={`/library/${song.id}`}
-      data-testid="song-item"
+    <div
       className="group flex flex-col gap-2 rounded-xl border bg-card p-3 hover:bg-accent/40"
     >
       <div className="relative aspect-square overflow-hidden rounded-lg">
-        <CoverArt seed={song.artSeed} className="size-full" />
-        <div className="absolute bottom-2 right-2 opacity-0 transition-opacity group-hover:opacity-100">
+        <Link href={`/library/${song.id}`} className="block size-full" aria-label={song.title}>
+          <CoverArt seed={song.artSeed} className="size-full" />
+        </Link>
+        <div className="absolute bottom-2 right-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
           {PlayButton}
         </div>
       </div>
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium">{song.title}</p>
-          <p className="truncate text-xs text-muted-foreground">
-            {song.durationS ? formatTime(song.durationS) : "—"} · {formatDate(song.createdAt)}
-            {song.editKind === "repaint" ? " · section edit" : song.editKind === "extend" ? " · extended" : ""}
+        <Link href={`/library/${song.id}`} data-testid="song-item" className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-medium">
+            <span className="truncate">{displayTitle}</span>
+            {takeLabel ? (
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs">{takeLabel}</span>
+            ) : null}
           </p>
-        </div>
+          {meta}
+        </Link>
         {FavButton}
       </div>
-    </Link>
+    </div>
   );
 }

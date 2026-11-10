@@ -11,8 +11,14 @@ import { usePlayer } from "@/lib/audio/store";
 function isTypingTarget(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
   const tag = el.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A") {
+    return true;
+  }
   if (el.isContentEditable) return true;
+  // Space must activate the focused control (buttons, links, switches, sliders).
+  if (el.closest("button, a, [role='button'], [role='switch'], [role='slider'], [role='tab'], [role='checkbox']")) {
+    return true;
+  }
   return false;
 }
 

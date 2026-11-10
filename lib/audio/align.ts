@@ -15,7 +15,7 @@ import path from "node:path";
 import { env } from "@/lib/env";
 import { mockTimings, parseAlignerPayload, type LyricTimings } from "@/lib/lyrics/timings";
 
-const INSTALL_HINT =
+export const ALIGNER_MISSING =
   "Lyric alignment needs the local aligner. Run ./scripts/setup.sh (it creates .venv-align) " +
   "or set ALIGN_PYTHON to a Python that has stable-ts installed.";
 
@@ -46,7 +46,7 @@ export async function alignLyrics(input: {
   if (env.MOCK_ENGINE) return mockTimings(input.lyrics, input.durationS);
 
   const python = resolveAlignPython();
-  if (!python) throw new Error(INSTALL_HINT);
+  if (!python) throw new Error(ALIGNER_MISSING);
   const script = path.resolve("scripts/align_lyrics.py");
   if (!fs.existsSync(script)) throw new Error("scripts/align_lyrics.py is missing.");
 
@@ -96,7 +96,7 @@ function runAligner(
     });
     proc.on("error", (err) => {
       clearTimeout(timer);
-      reject(new Error(`${INSTALL_HINT} (${err.message})`));
+      reject(new Error(`${ALIGNER_MISSING} (${err.message})`));
     });
     proc.on("close", (code) => {
       clearTimeout(timer);

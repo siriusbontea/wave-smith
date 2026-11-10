@@ -4,6 +4,7 @@
  * cached next to the master (spec §9.3 downloads).
  */
 import fs from "node:fs";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import { getSong, songAudioAbsPath } from "@/lib/songs/queries";
@@ -21,11 +22,14 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
     return NextResponse.json({ error: "Audio file missing" }, { status: 404 });
   }
 
-  const format = new URL(req.url).searchParams.get("format") === "mp3" ? "mp3" : "wav";
+  const asked = new URL(req.url).searchParams.get("format") === "mp3" ? "mp3" : "wav";
+  const masterExt = path.extname(masterAbs).slice(1).toLowerCase() || "wav";
+  // Never label MP3 bytes as WAV. If the master is already MP3, that is the download.
+  const format = asked === "wav" && masterExt !== "wav" ? masterExt : asked;
 
   let fileAbs = masterAbs;
-  let contentType = "audio/wav";
-  if (format === "mp3") {
+  let contentType = format === "mp3" || format === "mpeg" ? "audio/mpeg" : "audio/wav";
+  if (asked === "mp3" && masterExt !== "mp3") {
     try {
       fileAbs = await ensureMp3(masterAbs);
       contentType = "audio/mpeg";

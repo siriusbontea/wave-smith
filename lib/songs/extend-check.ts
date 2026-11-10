@@ -10,6 +10,10 @@
 export const EXTEND_LENGTH_ERROR =
   "The song was not extended. The base model Complete task finished, but the audio was not longer than the original, so this extend was discarded. The original song is unchanged.";
 
+/** Shown when demo mode would otherwise save a copy and call it a new edit. */
+export const DEMO_EDIT_NOTE =
+  "Demo mode did not change the audio. This edit was not saved, because every demo song is the same short sample.";
+
 export function extendGrew(input: {
   /** Demo/tests trust the mock's reported duration — the demo clip is never really longer. */
   mockEngine: boolean;

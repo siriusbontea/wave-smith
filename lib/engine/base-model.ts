@@ -24,7 +24,40 @@ export function baseCheckpointDir(engineDir = env.ENGINE_DIR): string {
   return path.resolve(engineDir, "checkpoints", BASE_DIT_MODEL);
 }
 
-/** True when the base checkpoint directory contains real weight files. */
+function fileSize(abs: string): number {
+  try {
+    const stat = fs.statSync(abs);
+    return stat.isFile() ? stat.size : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** A weight shard counts only when it is a non-empty file in this directory. */
+function shardReady(dir: string, name: string): boolean {
+  if (!name || name.includes("..") || name.includes("/") || name.includes("\\")) return false;
+  return fileSize(path.join(dir, name)) > 0;
+}
+
+/**
+ * An index counts only when it is non-empty JSON with a weight_map whose
+ * shards are all present and non-empty. A zero-byte index is not "ready".
+ */
+function indexReady(dir: string, name: string): boolean {
+  const abs = path.join(dir, name);
+  if (fileSize(abs) <= 0) return false;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(abs, "utf8")) as { weight_map?: unknown };
+    if (!parsed.weight_map || typeof parsed.weight_map !== "object") return false;
+    const shards = new Set(Object.values(parsed.weight_map as Record<string, unknown>));
+    if (shards.size === 0) return false;
+    return [...shards].every((shard) => typeof shard === "string" && shardReady(dir, shard));
+  } catch {
+    return false;
+  }
+}
+
+/** True when the base checkpoint directory contains real, non-empty weight files. */
 export function baseModelOnDisk(engineDir = env.ENGINE_DIR): boolean {
   const dir = baseCheckpointDir(engineDir);
   if (!fs.existsSync(dir)) return false;
@@ -34,11 +67,10 @@ export function baseModelOnDisk(engineDir = env.ENGINE_DIR): boolean {
   } catch {
     return false;
   }
-  return names.some(
-    (name) =>
-      name.endsWith(".safetensors") ||
-      name.endsWith(".bin") ||
-      name.endsWith(".index.json") ||
-      name === "model.safetensors.index.json",
-  );
+  for (const name of names) {
+    const weight = name.endsWith(".safetensors") || name.endsWith(".bin");
+    const index = name.endsWith(".index.json");
+    if (weight && !index && fileSize(path.join(dir, name)) > 0) return true;
+  }
+  return names.some((name) => name.endsWith(".index.json") && indexReady(dir, name));
 }

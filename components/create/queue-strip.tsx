@@ -10,7 +10,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { fetchJobs, type JobView } from "@/lib/client/api";
 
@@ -27,6 +27,7 @@ export function QueueStrip() {
   // Toast once per finished job. Seeded lazily with the first fetch so a page
   // load doesn't re-announce history.
   const announcedRef = useRef<Set<string> | null>(null);
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     if (!jobs) return;
     if (announcedRef.current === null) {
@@ -39,7 +40,11 @@ export function QueueStrip() {
       if (ACTIVE.has(job.status) || announcedRef.current.has(job.id)) continue;
       announcedRef.current.add(job.id);
       if (job.status === "succeeded") {
-        if (job.type === "generate" && job.result && "songIds" in job.result) {
+        if (job.result && "demoUnchanged" in job.result && job.result.demoUnchanged) {
+          toast("Demo mode did not change the audio", {
+            description: "The sample clip stays the same, so nothing new was saved.",
+          });
+        } else if (job.type === "generate" && job.result && "songIds" in job.result) {
           const count = job.result.songIds.length;
           const noun = job.editKind === "repaint" ? "section" : job.editKind === "extend" ? "extension" : count === 1 ? "take" : "takes";
           const openHref = job.result.songIds[0]
@@ -68,10 +73,11 @@ export function QueueStrip() {
 
   // Pure display rule (no clock math in render): every active job, plus the
   // two most recent finished ones for context. /api/jobs is already newest-first.
-  const all = jobs ?? [];
+  const all = (jobs ?? []).filter((job) => !hidden.has(job.id));
+  const finished = all.filter((job) => !ACTIVE.has(job.status));
   const visible = [
     ...all.filter((j) => ACTIVE.has(j.status)),
-    ...all.filter((j) => !ACTIVE.has(j.status)).slice(0, 2),
+    ...finished.slice(0, 2),
   ];
   if (visible.length === 0) return null;
 
@@ -85,6 +91,17 @@ export function QueueStrip() {
 
   return (
     <div data-testid="queue-strip" className="flex flex-col gap-2">
+      {finished.length > 0 ? (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="min-h-6 text-xs text-muted-foreground underline-offset-2 hover:underline"
+            onClick={() => setHidden(new Set(finished.map((job) => job.id)))}
+          >
+            Clear finished
+          </button>
+        </div>
+      ) : null}
       {visible.map((job) => (
         <JobRow key={job.id} job={job} queuePosition={queuedIds.indexOf(job.id) + 1} />
       ))}

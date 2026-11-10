@@ -24,6 +24,9 @@ import {
 
 const DEMO_CLIP = path.resolve("public/demo-clip.mp3");
 
+/** Length of public/demo-clip.mp3. Demo songs always report this, never the requested length. */
+export const DEMO_CLIP_DURATION_S = 10;
+
 interface MockTask {
   req: GenerateRequest;
   polls: number;
@@ -93,7 +96,7 @@ export class MockEngineClient implements EngineClient {
       finalPrompt: `${task.req.prompt} (mock enhanced caption)`,
       finalLyrics,
       bpm: 100,
-      durationS: task.req.durationS ?? 10,
+      durationS: DEMO_CLIP_DURATION_S,
       keyScale: "C major",
       timeSignature: "4",
       seed: String(task.req.seeds[i] ?? i),

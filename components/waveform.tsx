@@ -58,7 +58,15 @@ export function Waveform({ songId }: { songId: string }) {
   useEffect(() => {
     const ws = wsRef.current;
     const media = playerAudio();
-    if (!ws || !media || current?.id !== songId) return;
+    if (!ws || !media || current?.id !== songId || !current.audioPath) return;
+    // The shared audio element already fetched this file when the song was staged.
+    // Loading it again aborts that request.
+    try {
+      const srcPath = decodeURIComponent(new URL(media.src, window.location.href).pathname);
+      if (srcPath.endsWith(current.audioPath)) return;
+    } catch {
+      /* fall through and load */
+    }
     void ws.load(`/api/audio/${current.audioPath}`).catch((err: unknown) => {
       // wavesurfer aborts an in-flight peak fetch when load() is called again.
       if (!(err instanceof DOMException && err.name === "AbortError")) {
@@ -71,6 +79,7 @@ export function Waveform({ songId }: { songId: string }) {
     <div
       ref={containerRef}
       data-testid="waveform"
+      role="img"
       className="w-full rounded-lg border bg-card/50 px-2 py-3"
       aria-label="Waveform"
     />

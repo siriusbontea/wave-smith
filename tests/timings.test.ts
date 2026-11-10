@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mockTimings, parseAlignerPayload, parseStoredTimings, timingsToLrc } from "@/lib/lyrics/timings";
+import { lyricTokens, mockTimings, parseAlignerPayload, parseStoredTimings, timingsToLrc } from "@/lib/lyrics/timings";
 
 describe("lyric timings", () => {
   it("round-trips stored mock timings, including word startS", () => {
@@ -31,5 +31,10 @@ describe("lyric timings", () => {
     );
     expect(parsed?.source).toBe("aligned");
     expect(parsed?.lines[0]?.words[0]).toEqual({ text: "Hold", startS: 1.2, endS: 1.5 });
+  });
+
+  it("splits a Japanese line into more than one token", () => {
+    const tokens = lyricTokens("さくらがさいた");
+    expect(tokens.length).toBeGreaterThan(1);
   });
 });

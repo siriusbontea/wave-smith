@@ -24,6 +24,8 @@ export interface JobView {
         variationGroupId: string;
         parentSongId?: string;
         editKind?: "repaint" | "extend";
+        demoUnchanged?: boolean;
+        message?: string;
       }
     | { stemIds: string[]; songId: string }
     | { midiId: string; songId: string; source: string }
@@ -133,6 +135,16 @@ export function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+/** Map a dead connection to a sentence a kid can use. */
+async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    throw new Error("Couldn't reach Wavesmith. Is it still running?");
+  }
+}
+
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   const body = (await res.json().catch(() => null)) as
     | (T & { error?: string; issues?: Array<{ path: Array<string | number>; message: string }> })
@@ -154,12 +166,12 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 }
 
 export async function fetchJobs(signal?: AbortSignal): Promise<JobView[]> {
-  const res = await fetch("/api/jobs", { cache: "no-store", signal });
+  const res = await request("/api/jobs", { cache: "no-store", signal });
   return (await jsonOrThrow<{ jobs: JobView[] }>(res)).jobs;
 }
 
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthView> {
-  const res = await fetch("/api/health", { cache: "no-store", signal });
+  const res = await request("/api/health", { cache: "no-store", signal });
   return jsonOrThrow<HealthView>(res);
 }
 
@@ -177,7 +189,7 @@ export interface ForgeParams {
 }
 
 export async function forge(params: ForgeParams): Promise<{ jobId: string }> {
-  const res = await fetch("/api/generate", {
+  const res = await request("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
@@ -207,7 +219,7 @@ export async function generateLyrics(params: {
   language?: string;
   structureHints?: string;
 }): Promise<LyricsResult> {
-  const res = await fetch("/api/lyrics", {
+  const res = await request("/api/lyrics", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
@@ -219,7 +231,7 @@ export async function alignLyrics(
   songId: string,
   vocalLanguage: string,
 ): Promise<{ jobId: string }> {
-  const res = await fetch(`/api/songs/${songId}/align`, {
+  const res = await request(`/api/songs/${songId}/align`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ vocalLanguage }),
@@ -239,7 +251,7 @@ export async function editSong(
     vocalLanguage?: string;
   },
 ): Promise<{ jobId: string }> {
-  const res = await fetch(`/api/songs/${songId}/edit`, {
+  const res = await request(`/api/songs/${songId}/edit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -255,7 +267,7 @@ export async function enhance(params: {
   keyScale?: string;
   timeSignature?: "2" | "3" | "4" | "6";
 }): Promise<EnhanceView> {
-  const res = await fetch("/api/enhance", {
+  const res = await request("/api/enhance", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
@@ -264,17 +276,17 @@ export async function enhance(params: {
 }
 
 export async function fetchSongs(signal?: AbortSignal): Promise<SongView[]> {
-  const res = await fetch("/api/songs", { cache: "no-store", signal });
+  const res = await request("/api/songs", { cache: "no-store", signal });
   return (await jsonOrThrow<{ songs: SongView[] }>(res)).songs;
 }
 
 export async function fetchSong(id: string, signal?: AbortSignal): Promise<SongView> {
-  const res = await fetch(`/api/songs/${id}`, { cache: "no-store", signal });
+  const res = await request(`/api/songs/${id}`, { cache: "no-store", signal });
   return jsonOrThrow<SongView>(res);
 }
 
 export async function patchSong(id: string, patch: SongPatch): Promise<SongView> {
-  const res = await fetch(`/api/songs/${id}`, {
+  const res = await request(`/api/songs/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
@@ -283,12 +295,12 @@ export async function patchSong(id: string, patch: SongPatch): Promise<SongView>
 }
 
 export async function deleteSong(id: string): Promise<void> {
-  const res = await fetch(`/api/songs/${id}`, { method: "DELETE" });
+  const res = await request(`/api/songs/${id}`, { method: "DELETE" });
   await jsonOrThrow<{ deleted: string }>(res);
 }
 
 export async function importLibrary(json: unknown): Promise<{ imported: number; missingAudio: number }> {
-  const res = await fetch("/api/library/import", {
+  const res = await request("/api/library/import", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(json),
@@ -297,7 +309,7 @@ export async function importLibrary(json: unknown): Promise<{ imported: number; 
 }
 
 export async function forgeStems(songId: string): Promise<{ jobId: string }> {
-  const res = await fetch(`/api/songs/${songId}/stems`, { method: "POST" });
+  const res = await request(`/api/songs/${songId}/stems`, { method: "POST" });
   return jsonOrThrow<{ jobId: string }>(res);
 }
 
@@ -305,7 +317,7 @@ export async function forgeMidi(
   songId: string,
   source: "master" | "vocals" | "drums" | "bass" | "other",
 ): Promise<{ jobId: string }> {
-  const res = await fetch(`/api/songs/${songId}/midi`, {
+  const res = await request(`/api/songs/${songId}/midi`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source }),

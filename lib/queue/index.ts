@@ -20,7 +20,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { asc, and, eq } from "drizzle-orm";
+import { asc, and, eq, or } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getEngineClient } from "@/lib/engine";
 import {
@@ -35,7 +35,7 @@ import { transcribeToMidi, type MidiSource } from "@/lib/audio/basic-pitch";
 import { getSong, listStemsForSong, songAudioAbsPath } from "@/lib/songs/queries";
 import { padSilenceSeconds, probeDurationSeconds, removePaddedFile } from "@/lib/audio/ffmpeg";
 import { prepareGenerateJob } from "@/lib/queue/prepare-generate";
-import { EXTEND_LENGTH_ERROR, extendGrew } from "@/lib/songs/extend-check";
+import { DEMO_EDIT_NOTE, EXTEND_LENGTH_ERROR, extendGrew } from "@/lib/songs/extend-check";
 import {
   BASE_DIT_MODEL,
   BASE_GUIDANCE_SCALE,
@@ -141,6 +141,22 @@ export class Queue {
     type: "generate" | "stems" | "midi" | "align",
     payload: GenerateJobPayload | StemsJobPayload | MidiJobPayload | AlignJobPayload,
   ): string {
+    const serialized = JSON.stringify(payload);
+    // A second click of the same action, while the first is still queued or
+    // running, returns that job instead of starting a twin.
+    const inflight = db
+      .select()
+      .from(schema.jobs)
+      .where(
+        and(
+          eq(schema.jobs.type, type),
+          or(eq(schema.jobs.status, "queued"), eq(schema.jobs.status, "running")),
+        ),
+      )
+      .all();
+    const twin = inflight.find((job) => job.payload === serialized);
+    if (twin) return twin.id;
+
     const id = crypto.randomUUID();
     const songId =
       type === "stems"
@@ -155,7 +171,7 @@ export class Queue {
         id,
         type,
         status: "queued",
-        payload: JSON.stringify(payload),
+        payload: serialized,
         songId,
         createdAt: Date.now(),
       })
@@ -422,9 +438,21 @@ export class Queue {
         })
       ) {
         for (const dir of createdDirs) fs.rmSync(dir, { recursive: true, force: true });
+        if (env.MOCK_ENGINE) {
+          this.markDemoUnchanged(jobId, editing);
+          return;
+        }
         throw new Error(EXTEND_LENGTH_ERROR);
       }
       observedExtendS = !env.MOCK_ENGINE && probed != null ? probed : reported;
+    }
+
+    // Demo repaint copies the sample clip. Saving it as a new song looks like
+    // a real edit, so the job ends with a note and no child row.
+    if (env.MOCK_ENGINE && editing?.kind === "repaint") {
+      for (const dir of createdDirs) fs.rmSync(dir, { recursive: true, force: true });
+      this.markDemoUnchanged(jobId, editing);
+      return;
     }
 
     const songIds: string[] = [];
@@ -474,6 +502,29 @@ export class Queue {
             : {}),
         }),
         songId: songIds[0] ?? null,
+        finishedAt: Date.now(),
+      })
+      .where(eq(schema.jobs.id, jobId))
+      .run();
+  }
+
+  /** Demo edits do not get a child row. The sample clip is unchanged. */
+  private markDemoUnchanged(
+    jobId: string,
+    editing: NonNullable<GenerateJobPayload["edit"]>,
+  ): void {
+    db.update(schema.jobs)
+      .set({
+        status: "succeeded",
+        progress: 1,
+        result: JSON.stringify({
+          songIds: [],
+          demoUnchanged: true,
+          message: DEMO_EDIT_NOTE,
+          parentSongId: editing.parentSongId,
+          editKind: editing.kind,
+        }),
+        songId: editing.parentSongId,
         finishedAt: Date.now(),
       })
       .where(eq(schema.jobs.id, jobId))

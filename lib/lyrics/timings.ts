@@ -48,6 +48,20 @@ function clampSpan(start: number, end: number, durationS: number): { startS: num
   return { startS: roundTenth(startS), endS: roundTenth(Math.max(endS, startS)) };
 }
 
+const CJK = /[\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
+
+/** Split a sung line into words. CJK lines use a word segmenter; a line with no break stays one token. */
+export function lyricTokens(line: string): string[] {
+  const spaced = line.split(/\s+/).filter(Boolean);
+  if (spaced.length > 1 || !CJK.test(line)) return spaced;
+  if (typeof Intl === "undefined" || !("Segmenter" in Intl)) return spaced;
+  const locale = /[\u3040-\u30FF]/.test(line) ? "ja" : /[\uAC00-\uD7AF]/.test(line) ? "ko" : "zh";
+  const words = [...new Intl.Segmenter(locale, { granularity: "word" }).segment(line)]
+    .filter((part) => part.isWordLike)
+    .map((part) => part.segment);
+  return words.length > 1 ? words : spaced;
+}
+
 /** Even character-weighted times. Demo mode and tests use this; it is not alignment. */
 export function mockTimings(lyrics: string, durationS: number): LyricTimings {
   const lines = singableLines(lyrics);
@@ -61,7 +75,7 @@ export function mockTimings(lyrics: string, durationS: number): LyricTimings {
     const start = cursor;
     const end = index === lines.length - 1 ? duration : cursor + span;
     cursor = end;
-    const words = line.split(/\s+/).filter(Boolean);
+    const words = lyricTokens(line);
     const wordSpan = (end - start) / Math.max(1, words.length);
     return {
       text: line,

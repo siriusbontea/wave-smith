@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { forge } from "@/lib/client/api";
+import { useHeldSubmit } from "@/lib/client/use-held-submit";
 
 interface SettingsResponse {
   settings: Record<string, string>;
@@ -26,7 +27,7 @@ interface SettingsResponse {
   };
   lyrics: { available: boolean; model: string };
   mockEngine: boolean;
-  measuredGenerationS: number;
+  measuredGenerationS: number | null;
   extend?: { model: string; ready: boolean };
   connection?: {
     mode: "local" | "grok";
@@ -74,6 +75,7 @@ export function SettingsView() {
   });
 
   const [keyDraft, setKeyDraft] = useState("");
+  const held = useHeldSubmit();
 
   const connectionMutation = useMutation({
     mutationFn: (body: Record<string, unknown>) => patchSettings(body),
@@ -127,18 +129,26 @@ export function SettingsView() {
           </div>
           <div className="flex justify-between gap-4">
             <dt className="text-muted-foreground">Measured gen time</dt>
-            <dd>~{data.measuredGenerationS}s per 30s song (batch 2, this machine)</dd>
+            <dd>
+              {data.measuredGenerationS == null
+                ? "Not measured on this computer"
+                : `~${data.measuredGenerationS}s per 30s song`}
+            </dd>
           </div>
-          {data.mockEngine && (
-            <p className="text-xs text-amber-400">MOCK_ENGINE=1 — demo mode active.</p>
-          )}
         </dl>
+        {data.mockEngine ? (
+          <p className="mt-3 text-sm text-amber-950 dark:text-amber-100" role="status">
+            Demo mode is on. Songs are a sample clip, not music this computer generated.
+          </p>
+        ) : null}
         <Button
           className="mt-4"
           variant="outline"
           data-testid="test-generation"
-          onClick={() => testForge.mutate()}
-          disabled={testForge.isPending}
+          onClick={() => {
+            void held.run(() => testForge.mutateAsync()).catch(() => undefined);
+          }}
+          disabled={testForge.isPending || held.busy}
         >
           Run test generation
         </Button>
@@ -188,13 +198,18 @@ export function SettingsView() {
             the local engine as written. Wavesmith does not add a content filter.
           </p>
         ) : null}
+        {data.connection?.mode === "grok" && !data.connection.grokConfigured ? (
+          <p className="mt-3 text-sm" role="status">
+            No key yet, so lyrics stay on this computer.
+          </p>
+        ) : null}
         <div className="mt-4 grid gap-1.5">
           <Label htmlFor="xai-key">xAI API key</Label>
           <p className="text-xs text-muted-foreground">
             {data.connection?.grokKeySource === "env"
               ? "Using XAI_API_KEY from the environment. A key saved here is ignored until that variable is unset."
               : data.connection?.grokConfigured
-                ? "A key is saved on this Mac (data/xai-api-key). It is never shown again."
+                ? "A key is saved on this computer (data/xai-api-key). It is never shown again."
                 : "Optional. Leave empty to stay fully offline. Not stored in git."}
             {data.connection?.grokModel ? ` Model: ${data.connection.grokModel}.` : ""}
           </p>
@@ -231,9 +246,11 @@ export function SettingsView() {
       <section className="rounded-xl border bg-card p-4">
         <h2 className="font-medium">Lyrics LLM (Ollama)</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          {data.lyrics.available
-            ? `Connected — model ${data.lyrics.model}`
-            : "Not available — Generate Lyrics is hidden until Ollama is running."}
+          {data.mockEngine
+            ? "Demo writer. Ollama is not connected."
+            : data.lyrics.available
+              ? `Connected — model ${data.lyrics.model}`
+              : "Not available — Generate lyrics stays hidden until Ollama is running."}
         </p>
       </section>
 

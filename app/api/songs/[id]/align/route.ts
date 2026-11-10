@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getQueue } from "@/lib/queue";
 import { getSong, listStemsForSong, songAudioAbsPath } from "@/lib/songs/queries";
+import { ALIGNER_MISSING, alignerAvailable } from "@/lib/audio/align";
 import { VOCAL_LANGUAGES } from "@/lib/lyrics/language";
 
 export const dynamic = "force-dynamic";
@@ -56,6 +57,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       { error: "Audio is missing on disk — can't time the lyrics." },
       { status: 400 },
     );
+  }
+
+  if (!alignerAvailable()) {
+    return NextResponse.json({ error: ALIGNER_MISSING }, { status: 503 });
   }
 
   const language = (VOCAL_LANGUAGES as readonly string[]).includes(parsed.data.vocalLanguage)

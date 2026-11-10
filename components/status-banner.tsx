@@ -37,10 +37,14 @@ export function StatusBanner() {
   if (isError) {
     return (
       <div role="status" className="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm">
-        <span className="font-medium">Wavesmith app not reachable.</span> The API returned an error
-        (often because only the engine is running, or the dev server stopped). Run{" "}
-        <code className="rounded bg-muted px-1 py-0.5">./scripts/dev.sh</code> and open{" "}
-        <code className="rounded bg-muted px-1 py-0.5">http://127.0.0.1:3000</code>.
+        <span className="font-medium">Couldn&apos;t reach Wavesmith.</span> Is it still running?
+        <details className="mt-1 text-muted-foreground">
+          <summary className="cursor-pointer">How it works</summary>
+          <p className="mt-1">
+            Start it with <code className="rounded bg-muted px-1 py-0.5">./scripts/dev.sh</code> and
+            open <code className="rounded bg-muted px-1 py-0.5">http://127.0.0.1:3000</code>.
+          </p>
+        </details>
       </div>
     );
   }
@@ -50,9 +54,15 @@ export function StatusBanner() {
   if (state === "offline") {
     return (
       <div role="status" className="border-b border-destructive/40 bg-destructive/10 px-4 py-2 text-sm">
-        <span className="font-medium">Engine offline.</span> Start Wavesmith with{" "}
-        <code className="rounded bg-muted px-1 py-0.5">scripts/dev.sh</code> — see the README for
-        first-time setup.
+        <span className="font-medium">The music engine is not running.</span> New songs cannot be
+        made until it starts. Demo mode does not need it.
+        <details className="mt-1 text-muted-foreground">
+          <summary className="cursor-pointer">How it works</summary>
+          <p className="mt-1">
+            Whoever set up this computer can start it with{" "}
+            <code className="rounded bg-muted px-1 py-0.5">scripts/dev.sh</code>.
+          </p>
+        </details>
       </div>
     );
   }

@@ -72,12 +72,14 @@ export async function separateStems(
 
   if (env.MOCK_ENGINE) {
     onProgress?.(0.5, "Separating stems (mock)...");
+    // Keep the source extension. The demo clip is MP3; a .wav name would lie.
+    const ext = path.extname(inputAbs).toLowerCase() || ".mp3";
     for (const name of STEM_NAMES) {
-      const dest = path.join(stemsDir, `${name}.wav`);
+      const dest = path.join(stemsDir, `${name}${ext}`);
       fs.copyFileSync(inputAbs, dest);
     }
     onProgress?.(1, "Stems ready");
-    return Object.fromEntries(STEM_NAMES.map((n) => [n, path.join(stemsDir, `${n}.wav`)])) as Record<
+    return Object.fromEntries(STEM_NAMES.map((n) => [n, path.join(stemsDir, `${n}${ext}`)])) as Record<
       StemName,
       string
     >;

@@ -22,7 +22,7 @@ export function MiniPlayer() {
   return (
     <div
       data-testid="mini-player"
-      className="sticky bottom-0 z-20 flex items-center gap-4 border-t bg-card/95 px-4 py-2 backdrop-blur"
+      className="sticky bottom-0 z-20 flex flex-wrap items-center gap-3 border-t bg-card/95 px-4 py-2 backdrop-blur"
     >
       <Link href={`/library/${current.id}`} className="flex min-w-0 items-center gap-3">
         <CoverArt seed={current.artSeed} className="size-11 shrink-0 rounded" />
@@ -38,7 +38,7 @@ export function MiniPlayer() {
         {isPlaying ? <Pause className="size-4" /> : <Play className="size-4 translate-x-0.5" />}
       </button>
 
-      <div className="flex flex-1 items-center gap-2 text-xs tabular-nums text-muted-foreground">
+      <div className="flex min-w-40 flex-1 basis-full items-center gap-2 text-xs tabular-nums text-muted-foreground sm:basis-auto">
         <span>{formatTime(currentTime)}</span>
         <Slider
           aria-label="Seek"
@@ -46,7 +46,7 @@ export function MiniPlayer() {
           max={100}
           step={0.1}
           onValueChange={([v]) => seek(((v ?? 0) / 100) * total)}
-          className="flex-1"
+          className="min-w-24 flex-1"
         />
         <span>{formatTime(total)}</span>
       </div>

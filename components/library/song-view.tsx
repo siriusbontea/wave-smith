@@ -20,6 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import {
   deleteSong,
+  fetchHealth,
   fetchJobs,
   fetchSong,
   forgeMidi,
@@ -31,6 +32,7 @@ import {
   type SongView,
 } from "@/lib/client/api";
 import { usePlayer } from "@/lib/audio/store";
+import { useHeldSubmit } from "@/lib/client/use-held-submit";
 import { formatDate, formatTime } from "@/lib/format";
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
@@ -86,6 +88,12 @@ export function SongView({ id }: { id: string }) {
   });
 
   const { current, isPlaying, load, toggle, setRate, playbackRate } = usePlayer();
+  const held = useHeldSubmit();
+  const { data: health } = useQuery({
+    queryKey: ["health"],
+    queryFn: ({ signal }) => fetchHealth(signal),
+    staleTime: 15_000,
+  });
   const [title, setTitle] = useState("");
   const [lyrics, setLyrics] = useState("");
   const [bpm, setBpm] = useState("");
@@ -118,6 +126,38 @@ export function SongView({ id }: { id: string }) {
       false,
     );
   }, [song, load]);
+
+  const dirty = Boolean(
+    song &&
+      (title !== song.title ||
+        lyrics !== (song.lyrics ?? "") ||
+        bpm !== (song.bpm != null ? String(song.bpm) : "") ||
+        keyScale !== (song.keyScale ?? "") ||
+        timeSig !== (song.timeSignature ?? "")),
+  );
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const onClick = (event: MouseEvent) => {
+      const anchor = (event.target as HTMLElement | null)?.closest("a");
+      if (!anchor || anchor.hasAttribute("download") || anchor.target === "_blank") return;
+      const url = new URL(anchor.href, window.location.href);
+      if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+      if (!window.confirm("You have unsaved changes. Leave without saving?")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("click", onClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("click", onClick, true);
+    };
+  }, [dirty]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -185,8 +225,10 @@ export function SongView({ id }: { id: string }) {
     mutationFn: (source: MidiSource) => forgeMidi(id, source),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      toast.success("MIDI transcription queued", {
-        description: "Approximate notes via Basic Pitch — CPU only, playback can continue.",
+      toast.success("Notes queued", {
+        description: health?.mockEngine
+          ? "Demo mode saves a sample notes file. It is not this song."
+          : "This can take a minute. Playback can continue.",
       });
     },
     onError: (err) => {
@@ -231,6 +273,7 @@ export function SongView({ id }: { id: string }) {
           <h1 className="text-2xl font-semibold tracking-tight">{song.title}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {song.durationS ? formatTime(song.durationS) : "—"} · {formatDate(song.createdAt)}
+            {health?.mockEngine ? " · sample clip" : ""}
             {song.bpm ? ` · ${song.bpm} bpm` : ""}
             {song.keyScale ? ` · ${song.keyScale}` : ""}
           </p>
@@ -248,16 +291,26 @@ export function SongView({ id }: { id: string }) {
               {isCurrent && isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
               {isCurrent && isPlaying ? "Pause" : "Play"}
             </Button>
-            <a href={`/api/songs/${song.id}/download?format=wav`} download>
-              <Button variant="outline" data-testid="download-wav">
-                <Download className="size-4" /> WAV
+            {song.audioPath.toLowerCase().endsWith(".mp3") ? (
+              <Button variant="outline" asChild>
+                <a href={`/api/songs/${song.id}/download?format=mp3`} download data-testid="download-mp3">
+                  <Download className="size-4" /> Download MP3
+                </a>
               </Button>
-            </a>
-            <a href={`/api/songs/${song.id}/download?format=mp3`} download>
-              <Button variant="outline" data-testid="download-mp3">
-                <Download className="size-4" /> MP3
-              </Button>
-            </a>
+            ) : (
+              <>
+                <Button variant="outline" asChild>
+                  <a href={`/api/songs/${song.id}/download?format=wav`} download data-testid="download-wav">
+                    <Download className="size-4" /> Download WAV
+                  </a>
+                </Button>
+                <Button variant="outline" asChild>
+                  <a href={`/api/songs/${song.id}/download?format=mp3`} download data-testid="download-mp3">
+                    <Download className="size-4" /> Download MP3
+                  </a>
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -265,11 +318,14 @@ export function SongView({ id }: { id: string }) {
       <Waveform songId={song.id} />
 
       <SectionEditor
+        key={song.id}
         songId={song.id}
         durationS={song.durationS}
         lyrics={lyrics}
         timings={song.lyricTimings ?? null}
         onLyricsChange={setLyrics}
+        lyricsDirty={lyrics !== (song.lyrics ?? "")}
+        onSaveLyrics={() => saveMutation.mutate()}
       />
 
       <div className="flex items-center gap-4">
@@ -325,6 +381,7 @@ export function SongView({ id }: { id: string }) {
             id="lyrics"
             data-testid="song-lyrics"
             value={lyrics}
+            dir="auto"
             onChange={(e) => setLyrics(e.target.value)}
             rows={8}
             className="font-mono text-sm"
@@ -334,8 +391,8 @@ export function SongView({ id }: { id: string }) {
               {song.lyricTimings?.source === "aligned"
                 ? "Word timings are saved with this song."
                 : song.lyricTimings?.source === "mock"
-                  ? "Demo timings are saved with this song."
-                  : "Synced lyrics available (LRC)."}
+                  ? "Rough estimates are saved with this song. They are not measured times."
+                  : "Line times are saved with this song."}
             </p>
           ) : (
             <p className="text-xs text-muted-foreground">
@@ -349,10 +406,16 @@ export function SongView({ id }: { id: string }) {
       </section>
 
       <section className="rounded-xl border bg-card p-4" data-testid="stems-section">
-        <h2 className="font-medium">Stems</h2>
+        <h2 className="font-medium">Parts of the song</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Separate into vocals, drums, bass, and other (Demucs on CPU — may take a few minutes).
+          {health?.mockEngine
+            ? "Demo copies: each part is the full song, not a real split."
+            : "Split the song into voice, drums, bass, and everything else."}
         </p>
+        <details className="mt-1 text-sm text-muted-foreground">
+          <summary className="cursor-pointer">How it works</summary>
+          <p className="mt-1">A local tool named Demucs does the split on this computer. It can take a few minutes.</p>
+        </details>
         {stemsJob ? <JobProgress job={stemsJob} label="stems" /> : null}
         {stemsReady ? (
           <div className="mt-4 flex flex-col gap-3">
@@ -364,18 +427,20 @@ export function SongView({ id }: { id: string }) {
                 </div>
               ))}
             </div>
-            <a href={`/api/songs/${song.id}/stems/download`} download>
-              <Button variant="outline" data-testid="download-stems-zip">
-                <Download className="size-4" /> Download stems ZIP
-              </Button>
-            </a>
+            <Button variant="outline" asChild>
+              <a href={`/api/songs/${song.id}/stems/download`} download data-testid="download-stems-zip">
+                <Download className="size-4" /> Download parts
+              </a>
+            </Button>
           </div>
         ) : (
           <Button
             className="mt-4"
             data-testid="generate-stems"
-            onClick={() => stemsMutation.mutate()}
-            disabled={stemsMutation.isPending || !!stemsJob}
+            onClick={() => {
+              void held.run(() => stemsMutation.mutateAsync()).catch(() => undefined);
+            }}
+            disabled={stemsMutation.isPending || held.busy || !!stemsJob}
           >
             {stemsJob ? "Separating…" : "Generate stems"}
           </Button>
@@ -383,13 +448,18 @@ export function SongView({ id }: { id: string }) {
       </section>
 
       <section className="rounded-xl border bg-card p-4" data-testid="midi-section">
-        <h2 className="font-medium">MIDI</h2>
+        <h2 className="font-medium">Notes file</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Transcribe audio to an approximate MIDI file (Spotify Basic Pitch on CPU). Stems often
-          transcribe cleaner than the full mix. Files are saved under{" "}
-          <code className="rounded bg-muted px-1 py-0.5 text-xs">data/audio/&lt;song-id&gt;/midi/</code>{" "}
-          — see Settings → Storage for the full path on your machine.
+          {health?.mockEngine
+            ? "Demo sample: this notes file is not a transcription of this song."
+            : "Turn the audio into a rough music-notation file."}
         </p>
+        <details className="mt-1 text-sm text-muted-foreground">
+          <summary className="cursor-pointer">How it works</summary>
+          <p className="mt-1">
+            A local tool named Basic Pitch guesses the notes on this computer. The file is saved with the song.
+          </p>
+        </details>
         {midiJob ? (
           <JobProgress
             job={midiJob}
@@ -409,11 +479,11 @@ export function SongView({ id }: { id: string }) {
                   <span className="capitalize text-sm">{m.source === "master" ? "Full mix" : m.source}</span>
                   <p className="truncate font-mono text-xs text-muted-foreground">{m.path}</p>
                 </div>
-                <a href={`/api/audio/${m.path}`} download>
-                  <Button variant="outline" size="sm" data-testid={`download-midi-${m.source}`}>
-                    <Download className="size-4" /> MIDI
-                  </Button>
-                </a>
+                <Button variant="outline" size="sm" asChild>
+                  <a href={`/api/audio/${m.path}`} download data-testid={`download-midi-${m.source}`}>
+                    <Download className="size-4" /> Download notes
+                  </a>
+                </Button>
               </li>
             ))}
           </ul>
@@ -433,8 +503,10 @@ export function SongView({ id }: { id: string }) {
           </Select>
           <Button
             data-testid="generate-midi"
-            onClick={() => midiMutation.mutate(midiSource)}
-            disabled={midiMutation.isPending || !!midiJob}
+            onClick={() => {
+              void held.run(() => midiMutation.mutateAsync(midiSource)).catch(() => undefined);
+            }}
+            disabled={midiMutation.isPending || held.busy || !!midiJob}
           >
             {midiJob && midiJob.midiSource === midiSource
               ? "Transcribing…"
@@ -448,7 +520,7 @@ export function SongView({ id }: { id: string }) {
       </section>
 
       <div className="flex items-center justify-between border-t pt-6">
-        <Link href="/library" className="text-sm text-muted-foreground hover:text-foreground">
+        <Link href="/library" className="inline-flex min-h-6 items-center text-sm text-muted-foreground hover:text-foreground">
           ← Back to library
         </Link>
         <Button
