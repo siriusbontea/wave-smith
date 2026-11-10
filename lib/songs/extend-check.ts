@@ -1,14 +1,14 @@
 /**
  * lib/songs/extend-check.ts — did an extend job actually get longer?
  *
- * Turbo has no `complete` task (ENGINE_NOTES §5). Extend is a repaint whose
- * window runs past the source duration. If the file (or, in demo mode, the
- * engine's reported duration) didn't grow, the job must fail instead of
- * presenting the original mix as an extension.
+ * Extend runs task_type=complete on acestep-v15-base. v0.1.8 sizes that task
+ * to the uploaded audio, so the queue pads a silent tail first. If the file
+ * (or, in demo mode, the engine's reported duration) still did not grow, the
+ * job fails instead of saving the original mix as an extension.
  */
 
 export const EXTEND_LENGTH_ERROR =
-  "The song was not extended. This build's ACE-Step turbo model can repaint a section, but lengthening audio is the base-only Complete task (acestep-v15-base), which is not loaded. The turbo repaint kept the original length, so this extend was discarded.";
+  "The song was not extended. The base model Complete task finished, but the audio was not longer than the original, so this extend was discarded. The original song is unchanged.";
 
 export function extendGrew(input: {
   /** Demo/tests trust the mock's reported duration — the demo clip is never really longer. */

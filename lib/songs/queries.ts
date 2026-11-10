@@ -9,6 +9,7 @@ import { desc, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { env } from "@/lib/env";
 import type { Song, Stem, MidiTrack } from "@/db/schema";
+import { parseStoredTimings, type LyricTimings } from "@/lib/lyrics/timings";
 
 export interface SongDTO {
   id: string;
@@ -31,6 +32,7 @@ export interface SongDTO {
   createdAt: number;
   parentSongId: string | null;
   editKind: "repaint" | "extend" | null;
+  lyricTimings: LyricTimings | null;
 }
 
 export function toDTO(row: Song): SongDTO {
@@ -41,7 +43,7 @@ export function toDTO(row: Song): SongDTO {
   } catch {
     /* leave empty */
   }
-  return { ...row, tags, favorite: row.favorite };
+  return { ...row, tags, favorite: row.favorite, lyricTimings: parseStoredTimings(row.lyricTimings) };
 }
 
 export function listSongs(): SongDTO[] {

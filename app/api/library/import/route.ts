@@ -29,6 +29,20 @@ const SongSchema = z.object({
   variationGroupId: z.string().default(""),
   audioPath: z.string().min(1),
   lrc: z.string().nullable().default(null),
+  lyricTimings: z
+    .object({
+      source: z.enum(["aligned", "mock"]),
+      lines: z.array(
+        z.object({
+          text: z.string(),
+          startS: z.number(),
+          endS: z.number(),
+          words: z.array(z.object({ text: z.string(), startS: z.number(), endS: z.number() })),
+        }),
+      ),
+    })
+    .nullable()
+    .optional(),
   qualityScore: z.number().nullable().default(null),
   artSeed: z.string().default(""),
   favorite: z.boolean().default(false),
@@ -60,6 +74,7 @@ export async function POST(req: Request) {
     const row = {
       ...s,
       tags: JSON.stringify(s.tags),
+      lyricTimings: s.lyricTimings ? JSON.stringify(s.lyricTimings) : null,
       bpm: s.bpm,
       artSeed: s.artSeed || s.id,
       variationGroupId: s.variationGroupId || s.id,

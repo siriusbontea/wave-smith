@@ -51,6 +51,10 @@ const EnvSchema = z.object({
   DEMUCS_BIN: z.string().optional(),
   /** Absolute path to the basic-pitch CLI (optional; auto-detected like demucs). */
   BASIC_PITCH_BIN: z.string().optional(),
+  /** Python for the lyric aligner. setup.sh creates .venv-align when omitted. */
+  ALIGN_PYTHON: z.string().optional(),
+  /** Whisper checkpoint name passed to stable-ts. "base" is the default. */
+  ALIGN_WHISPER_MODEL: z.string().default("base"),
 });
 
 // Empty-string env vars (e.g. `ENGINE_URL=` in a .env) must mean "unset" —

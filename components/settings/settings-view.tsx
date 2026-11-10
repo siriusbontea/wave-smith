@@ -27,6 +27,7 @@ interface SettingsResponse {
   lyrics: { available: boolean; model: string };
   mockEngine: boolean;
   measuredGenerationS: number;
+  extend?: { model: string; ready: boolean };
   connection?: {
     mode: "local" | "grok";
     lyricsPolicy: "standard" | "unrestricted";
@@ -113,6 +114,16 @@ export function SettingsView() {
           <div className="flex justify-between gap-4">
             <dt className="text-muted-foreground">LM</dt>
             <dd>{data.engine.loadedLmModel ?? "—"}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-muted-foreground">Extend model</dt>
+            <dd>
+              {data.mockEngine
+                ? `${data.extend?.model ?? "acestep-v15-base"} (demo — weights not loaded)`
+                : data.extend?.ready
+                  ? `${data.extend.model} on disk`
+                  : `${data.extend?.model ?? "acestep-v15-base"} not downloaded`}
+            </dd>
           </div>
           <div className="flex justify-between gap-4">
             <dt className="text-muted-foreground">Measured gen time</dt>

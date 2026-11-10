@@ -49,6 +49,13 @@ export class MockEngineClient implements EngineClient {
     // Mock engine is always warm.
   }
 
+  /** Recorded so tests can assert Extend swaps to base and back. No weights load. */
+  ditLoads: string[] = [];
+
+  async useDitModel(model: string): Promise<void> {
+    this.ditLoads.push(model);
+  }
+
   async generate(req: GenerateRequest): Promise<{ taskId: string }> {
     const taskId = `mock-${++this.counter}`;
     this.tasks.set(taskId, { req, polls: 0 });
@@ -90,7 +97,7 @@ export class MockEngineClient implements EngineClient {
       keyScale: "C major",
       timeSignature: "4",
       seed: String(task.req.seeds[i] ?? i),
-      ditModel: "mock",
+      ditModel: task.req.ditModel ?? "mock",
       lmModel: "mock",
     }));
     this.tasks.delete(taskId);

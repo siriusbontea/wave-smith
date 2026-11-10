@@ -53,12 +53,19 @@ export interface GenerateRequest {
   /** When true, send use_cot_language:false so the engine LM keeps vocal_language. */
   lockVocalLanguage?: boolean;
   /**
-   * "repaint" rewrites a time range of srcAudioPath (turbo supports this).
-   * Omit for a normal text-to-music forge. Lengthening uses the same task
-   * with repaintingEnd past the source duration — see ENGINE_NOTES.
+   * "repaint" rewrites a time range (turbo). "complete" continues a song and
+   * requires the base DiT — see ENGINE_NOTES. Omit for a normal forge.
    */
-  taskType?: "text2music" | "repaint";
-  /** Absolute path to the source mix. Required for repaint. Uploaded as src_audio. */
+  taskType?: "text2music" | "repaint" | "complete";
+  /** DiT name sent as `model`. Unknown names fall back to the loaded primary. */
+  ditModel?: string;
+  /** Base-model diffusion steps. Turbo ignores values other than its distilled schedule. */
+  inferenceSteps?: number;
+  /** CFG scale. Turbo forces this to 1.0; base uses it. */
+  guidanceScale?: number;
+  /** When false, the 5Hz LM does not invent audio codes for this call. */
+  thinking?: boolean;
+  /** Absolute path to the source mix. Required for repaint and complete. Uploaded as src_audio. */
   srcAudioPath?: string;
   /** Repaint window start, seconds. */
   repaintingStart?: number;
@@ -130,6 +137,11 @@ export interface EngineClient {
   health(): Promise<EngineHealth>;
   /** Idempotent: loads DiT + the pinned LM. Resolves when the engine is ready. */
   warmUp(): Promise<void>;
+  /**
+   * Replace the DiT in slot 1. One model stays resident — calling this with
+   * base unloads turbo, and the reverse restores the fast path (ENGINE_NOTES).
+   */
+  useDitModel(model: string): Promise<void>;
   generate(req: GenerateRequest): Promise<{ taskId: string }>;
   getTask(taskId: string): Promise<EngineTaskStatus>;
   /** Streams an engine take to a local file. */

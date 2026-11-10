@@ -1,42 +1,53 @@
 /**
- * components/library/section-editor.tsx — Suno-style section timeline.
+ * components/library/section-editor.tsx — section timeline.
  *
- * Shows estimated sections (no LRC from the engine) with a regenerate action,
- * plus extend. Regenerate is a real turbo repaint. Extend asks turbo to
- * continue past the end and fails closed if the audio doesn't get longer.
- * Vocal-only swap is not offered — turbo repaint rewrites the whole range.
+ * Regenerate is a turbo repaint of one time range. Extend loads the base
+ * model and runs complete, then restores turbo. Cuts follow stored word
+ * timings when they still match the lyrics, and tag estimates otherwise.
+ * Vocal-only swap is not offered — repaint rewrites the whole range.
  */
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { editSong, fetchJobs, type JobView } from "@/lib/client/api";
+import { alignLyrics, editSong, fetchHealth, fetchJobs, type JobView } from "@/lib/client/api";
 import { formatTime } from "@/lib/format";
-import { parseLyricSections, replaceSectionBody } from "@/lib/songs/sections";
+import { VOCAL_LANGUAGE_LABELS, VOCAL_LANGUAGES, type VocalLanguage } from "@/lib/lyrics/language";
+import type { LyricTimings } from "@/lib/lyrics/timings";
+import { replaceSectionBody, sectionsForTimeline } from "@/lib/songs/sections";
+
+const LANGUAGE_OPTIONS: VocalLanguage[] = [...VOCAL_LANGUAGES].sort((a, b) =>
+  VOCAL_LANGUAGE_LABELS[a].localeCompare(VOCAL_LANGUAGE_LABELS[b]),
+);
 
 export function SectionEditor({
   songId,
   durationS,
   lyrics,
+  timings,
   onLyricsChange,
 }: {
   songId: string;
   durationS: number | null;
   lyrics: string;
+  timings: LyricTimings | null;
   onLyricsChange: (next: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [extendS, setExtendS] = useState(15);
   const [extendText, setExtendText] = useState("[outro]\n");
-  const sections = useMemo(
-    () => parseLyricSections(lyrics, durationS ?? 0),
-    [lyrics, durationS],
+  const [language, setLanguage] = useState<VocalLanguage>("en");
+  const timeline = useMemo(
+    () => sectionsForTimeline(lyrics, durationS ?? 0, timings),
+    [lyrics, durationS, timings],
   );
+  const sections = timeline.sections;
 
   const { data: jobs } = useQuery({
     queryKey: ["jobs"],
@@ -71,21 +82,90 @@ export function SectionEditor({
     onError: (err) => toast.error("Couldn't start the edit", { description: err.message }),
   });
 
-  const busy = editMutation.isPending || !!active;
+  const { data: health } = useQuery({
+    queryKey: ["health"],
+    queryFn: ({ signal }) => fetchHealth(signal),
+    staleTime: 15_000,
+  });
+  const baseReady = health?.extend?.ready ?? health?.mockEngine ?? false;
+
+  const alignJob = jobs?.find(
+    (j) => j.songId === songId && j.type === "align" && (j.status === "queued" || j.status === "running"),
+  );
+  const seenAlign = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!jobs) return;
+    if (seenAlign.current === null) {
+      seenAlign.current = new Set(jobs.map((j) => j.id));
+      return;
+    }
+    for (const job of jobs) {
+      if (job.type !== "align" || job.songId !== songId || seenAlign.current.has(job.id)) continue;
+      if (job.status !== "succeeded" && job.status !== "failed") continue;
+      seenAlign.current.add(job.id);
+      if (job.status === "succeeded") {
+        void queryClient.invalidateQueries({ queryKey: ["song", songId] });
+      }
+    }
+  }, [jobs, songId, queryClient]);
+
+  const alignMutation = useMutation({
+    mutationFn: () => alignLyrics(songId, language),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      toast("Timing lyrics", { description: "Section cuts update when the alignment finishes." });
+    },
+    onError: (err) => toast.error("Couldn't time the lyrics", { description: err.message }),
+  });
+
+  const busy = editMutation.isPending || !!active || alignMutation.isPending || !!alignJob;
   const canEdit = durationS != null && durationS > 0 && !busy;
+  const timingNote =
+    timeline.source === "aligned"
+      ? "Cuts follow the timed vocal. Regenerate uses those times."
+      : timeline.source === "mock"
+        ? "Demo timings only — they are not a real alignment. A local aligner runs when it is installed."
+        : "Cuts are estimated from lyric tags. Time the lyrics to place them on the vocal.";
 
   return (
     <section className="rounded-xl border bg-card p-4" data-testid="section-timeline">
       <h2 className="font-medium">Sections</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Regenerate rewrites one time range and keeps the rest. Times are estimated from the lyric
-        tags — the engine does not return word timings. This is not a vocal-only swap.
+        Regenerate rewrites one time range and keeps the rest. {timingNote} This is not a vocal-only swap.
       </p>
       {durationS == null ? (
         <p className="mt-3 text-sm text-destructive" role="status">
           This song has no duration yet, so sections cannot be placed.
         </p>
       ) : null}
+      <div className="mt-3 flex flex-wrap items-end gap-2">
+        <div className="grid gap-1">
+          <Label htmlFor="align-language" className="text-xs">Vocal language</Label>
+          <Select value={language} onValueChange={(value) => setLanguage(value as VocalLanguage)}>
+            <SelectTrigger id="align-language" className="w-44" aria-label="Language for lyric timing">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {LANGUAGE_OPTIONS.map((code) => (
+                <SelectItem key={code} value={code}>
+                  {VOCAL_LANGUAGE_LABELS[code]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          data-testid="align-lyrics"
+          disabled={busy || !lyrics.trim()}
+          onClick={() => alignMutation.mutate()}
+        >
+          {alignJob ? "Timing lyrics…" : "Time the lyrics"}
+        </Button>
+      </div>
+      {alignJob ? <EditProgress job={alignJob} /> : null}
       {active ? <EditProgress job={active} /> : null}
       {finished?.result && "songIds" in finished.result ? (
         <p className="mt-3 text-sm" role="status">
@@ -109,6 +189,29 @@ export function SectionEditor({
               <p className="mt-1 text-xs text-muted-foreground">
                 No [verse] / [chorus] tags yet, so this rewrites the middle and keeps the intro and ending.
               </p>
+            ) : null}
+            {section.lines && section.lines.length > 0 ? (
+              <ul className="mt-2 flex flex-col gap-1">
+                {section.lines.map((line) => (
+                  <li key={`${line.startS}-${line.text}`} className="text-xs text-muted-foreground">
+                    <span className="tabular-nums">{formatTime(line.startS)}</span>
+                    <span className="ml-2 text-foreground">{line.text}</span>
+                    {line.words.length > 0 ? (
+                      <span className="mt-1 flex flex-wrap gap-1">
+                        {line.words.map((word, wordIndex) => (
+                          <span
+                            key={`${word.startS}-${wordIndex}`}
+                            className="rounded bg-muted px-1.5 py-0.5"
+                            title={`${formatTime(word.startS)}–${formatTime(word.endS)}`}
+                          >
+                            {word.text}
+                          </span>
+                        ))}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
             ) : null}
             <div
               className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
@@ -158,9 +261,16 @@ export function SectionEditor({
       <div className="mt-5 border-t pt-4" data-testid="extend-panel">
         <h3 className="text-sm font-medium">Extend</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Continue past the end with the local turbo model. If it cannot lengthen the audio, the job
-          fails and the original is kept. The base-model Complete task is not loaded.
+          Continue with the base model Complete task. Turbo is unloaded for this job so both models
+          are not in memory, then loaded again. About 50 steps, so it is slower than a normal forge.
+          If the new file is not longer, the job fails and the original stays.
         </p>
+        {health && !baseReady ? (
+          <p className="mt-2 text-sm text-destructive" role="status">
+            {health.extend?.hint ??
+              "The base model is not downloaded. Run ./scripts/setup.sh, or from the engine folder: uv run acestep-download -m acestep-v15-base."}
+          </p>
+        ) : null}
         <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Seconds to add">
           {[15, 30].map((n) => (
             <Button
@@ -189,7 +299,7 @@ export function SectionEditor({
           className="mt-2"
           size="sm"
           data-testid="extend-song"
-          disabled={!canEdit}
+          disabled={!canEdit || !baseReady}
           onClick={() => {
             const extra = extendText.trim();
             const next = lyrics.trim() && extra ? `${lyrics.trim()}\n${extra}` : lyrics.trim() || extra;
@@ -210,7 +320,7 @@ export function SectionEditor({
 
 function EditProgress({ job }: { job: JobView }) {
   const pct = Math.round((job.progress ?? 0) * 100);
-  const name = job.editKind === "extend" ? "Extend" : "Section";
+  const name = job.type === "align" ? "Lyrics" : job.editKind === "extend" ? "Extend" : "Section";
   return (
     <div className="mt-3" data-testid="edit-job-progress">
       <div className="flex items-center justify-between text-sm">

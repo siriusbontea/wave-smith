@@ -1,12 +1,13 @@
 /**
  * lib/songs/sections.ts — lyric structure → a section timeline.
  *
- * ACE-Step's REST API does not return LRC (ENGINE_NOTES §7), so section
- * boundaries are estimated: split on [verse]/[chorus]/… tags (or "Verse 1:"
- * labels) and share the song duration by line count. A song with no tags
- * becomes one "Middle" window so a regenerate still leaves the intro and
- * ending untouched.
+ * ACE-Step's REST API does not return LRC (ENGINE_NOTES §7). When a local
+ * alignment is stored, section cuts use those line times. Otherwise boundaries
+ * are estimated: split on [verse]/[chorus]/… tags (or "Verse 1:" labels) and
+ * share the song duration by line count. A song with no tags becomes one
+ * "Middle" window so a regenerate still leaves the intro and ending untouched.
  */
+import type { LineTiming, LyricTimings } from "@/lib/lyrics/timings";
 
 export interface LyricSection {
   index: number;
@@ -20,7 +21,11 @@ export interface LyricSection {
   endS: number;
   /** True when the song had no structure tags and we invented a middle window. */
   synthetic: boolean;
+  /** Sung lines inside this section, present when timings were applied. */
+  lines?: LineTiming[];
 }
+
+export type SectionTimingSource = "aligned" | "mock" | "estimated";
 
 /** Bracket tags, or "Verse 1:" / "Chorus:" labels. A bare lyric line like "Hook" is not a tag. */
 const TAG_LINE =
@@ -137,8 +142,8 @@ export function clampRepaintWindow(durationS: number, startS: number, endS: numb
 }
 
 /**
- * Continue past the end by repainting from 2s before the current ending
- * through duration+extend. The base-only `complete` task is not used.
+ * Target length for an extend. The queue pads the source by (target - duration)
+ * and runs the base model's complete task. See ENGINE_NOTES.
  */
 export function extendWindow(durationS: number, extendS: number): EditWindow | { error: string } {
   if (!Number.isFinite(durationS) || durationS <= 0) {
@@ -156,4 +161,98 @@ export function extendWindow(durationS: number, extendS: number): EditWindow | {
     end: roundTenth(target),
     target: roundTenth(target),
   };
+}
+
+function sungLines(body: string): string[] {
+  return body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !TAG_LINE.test(line));
+}
+
+function normalizeLine(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Prefer stored line times for section cuts. Falls back to tag estimates when
+ * the timings are missing or no longer line up with the lyric text.
+ */
+export function sectionsForTimeline(
+  lyrics: string,
+  durationS: number,
+  timings: LyricTimings | null,
+): { sections: LyricSection[]; source: SectionTimingSource } {
+  const estimated = parseLyricSections(lyrics, durationS);
+  if (!timings || timings.lines.length === 0) {
+    return { sections: estimated, source: "estimated" };
+  }
+  // Same lines the estimator kept. A preamble before the first tag is not its own section.
+  const expected = estimated.flatMap((section) => sungLines(section.body));
+  if (expected.length === 0) return { sections: estimated, source: "estimated" };
+
+  const paired = pairLines(expected, timings.lines);
+  if (paired.filter(Boolean).length < Math.ceil(expected.length / 2)) {
+    return { sections: estimated, source: "estimated" };
+  }
+
+  if (estimated.length === 1 && estimated[0]!.synthetic) {
+    const used = paired.filter((line): line is LineTiming => line != null);
+    const startS = used[0]!.startS;
+    const endS = Math.max(startS + 1, used[used.length - 1]!.endS);
+    return {
+      source: timings.source,
+      sections: [
+        {
+          ...estimated[0]!,
+          startS: roundTenth(startS),
+          endS: roundTenth(Math.min(endS, durationS > 0 ? durationS : endS)),
+          lines: used,
+        },
+      ],
+    };
+  }
+
+  let cursor = 0;
+  const sections = estimated.map((section) => {
+    const count = sungLines(section.body).length;
+    const slice = paired.slice(cursor, cursor + count);
+    cursor += count;
+    const used = slice.filter((line): line is LineTiming => line != null);
+    if (used.length === 0) return section;
+    const startS = used[0]!.startS;
+    const endS = Math.max(startS + 0.5, used[used.length - 1]!.endS);
+    return {
+      ...section,
+      startS: roundTenth(startS),
+      endS: roundTenth(endS),
+      lines: used,
+    };
+  });
+  return { sections, source: timings.source };
+}
+
+/** Zip by index when the line counts match; otherwise match normalized text in order. */
+function pairLines(expected: string[], timed: LineTiming[]): Array<LineTiming | null> {
+  if (expected.length === timed.length) return timed.slice();
+  const out: Array<LineTiming | null> = [];
+  let j = 0;
+  for (const line of expected) {
+    const want = normalizeLine(line);
+    let found: LineTiming | null = null;
+    while (j < timed.length) {
+      const candidate = timed[j]!;
+      j += 1;
+      if (normalizeLine(candidate.text) === want) {
+        found = candidate;
+        break;
+      }
+    }
+    out.push(found);
+  }
+  return out;
 }

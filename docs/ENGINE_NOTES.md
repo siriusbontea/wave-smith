@@ -102,7 +102,9 @@ Main bundle ships **`acestep-v15-turbo`** (default; 8 steps, no CFG). Optional: 
 
 ## 7. LRC + quality score: NOT in the REST API
 
-LRC (timestamped lyrics) and PMI quality scoring exist **only in the Gradio UI layer** (`acestep/ui/gradio/...`); no REST request param, no response field, on any endpoint. **Consequences for Wavesmith:** `songs.lrc` and `songs.quality_score` stay null; synced-lyrics view falls back to plain lyrics; quality badge hidden. (Post-MVP option: port the alignment scorer, spec §14.)
+LRC (timestamped lyrics) and PMI quality scoring exist **only in the Gradio UI layer** (`acestep/ui/gradio/...`); no REST request param, no response field, on any endpoint. `get_lyric_timestamp` aligns decoder cross-attention to lyric tokens, and it needs the generation latents (`pred_latents`, encoder states, lyric token ids). Those tensors are not in `/query_result` and Wavesmith does not keep them.
+
+**Consequences:** `songs.quality_score` stays null. `songs.lrc` and `songs.lyric_timings` are filled by a **local** aligner (`scripts/align_lyrics.py`, stable-ts / Whisper `base` on CPU), preferably on the Demucs vocal stem. When that job has not run, or the stored lines no longer match the lyric text, section cuts fall back to tag estimates. No cloud service is used. The first alignment downloads the Whisper checkpoint into the local cache; later runs are offline.
 
 ## 8. Apple Silicon runtime (this machine)
 
@@ -132,14 +134,17 @@ Takeaways: batch count dominates cost far more than duration; song-length scalin
 - Batch semantics chosen: **one engine call with `batch_size=N`** per forge (N=1–4), not N serial calls — single queue slot, per-take seeds, one `variation_group_id`.
 - M0 gate evidence: `data/m0-evidence/` — `take_0.wav`/`take_1.wav` (synthwave, batch-2 distinct takes), `explicit_test.wav` (lyrics passthrough), `orchestral_180s.wav` (long render). Gitignored; listen to confirm vocal content.
 
-## 11. Repaint and extend (turbo, 2026-11-10)
+## 11. Repaint, extend, and the base model (2026-11-10)
 
-Pinned v0.1.8 `GenerateMusicRequest` accepts `task_type=repaint` with `src_audio` (multipart), `repainting_start`, `repainting_end`, and `chunk_mask_mode=explicit`. Turbo's supported tasks are `text2music | repaint | cover | cover-nofsq`. **`complete` (true continuation) needs pure `acestep-v15-base`**, which this app does not load.
+Pinned v0.1.8 `GenerateMusicRequest` accepts `task_type=repaint` with `src_audio` (multipart), `repainting_start`, `repainting_end`, and `chunk_mask_mode=explicit`. Turbo's supported tasks are `text2music | repaint | cover | cover-nofsq`. **`complete` needs pure `acestep-v15-base`** (CFG, 50 steps). Per-request `model` only selects a DiT that is already loaded; an unknown name **silently falls back to the primary**.
 
-Wavesmith therefore:
+`complete` is not a masked repaint. In `padding_utils.py` it is in the "other tasks" branch: the uploaded waveform is **not** padded, and repaint coordinates are discarded. `generate_music.py` locks duration to the source for cover/repaint/lego/extract, but **not** for complete — and the latent length still follows the uploaded audio (or LM audio codes, if `thinking` is on). Codes would replace the source. Wavesmith therefore:
 
-- Regenerates a section with `task_type=repaint`, caption CoT off (`use_cot_caption=false`), batch size 1, and the library file uploaded as `src_audio`.
-- Treats "extend" as a repaint whose end is past the source duration (2s overlap). After the file is saved, a non-mock job checks duration with ffprobe (falling back to the engine's reported duration). If it did not grow, the new files are deleted and the job fails with an explicit base-model message.
-- Does not implement vocal-only replacement. `cover` can restyle a whole mix; it does not keep an instrumental bed and swap only the vocal. That remains future work, and it would also unload the LM on MPS (see §8).
+- Regenerates a section with turbo `task_type=repaint`, caption CoT off, batch size 1, library file as `src_audio`.
+- Extends with `task_type=complete` on `acestep-v15-base`, `thinking=false`, `inference_steps=50`, `guidance_scale=7`, instruction `Complete the input track:`. Before the upload, ffmpeg appends the requested seconds of silence so the file is already the target length. `audio_duration` is that target.
+- After the file is saved, a non-mock job checks duration with ffprobe (falling back to the engine's reported duration). If it did not grow, the new files are deleted and the job fails.
+- Does not implement vocal-only replacement. `cover` restyles a whole mix. `complete` in the upstream tutorial is "add accompaniment to a single track"; time extension in that tutorial is repaint outpainting. On this pin, turbo repaint's duration is locked back to the unpadded source before padding is applied, and the previous pass could not rely on it to grow. Base `complete` plus an explicit tail is the path that both uses the base-only task and can come back longer.
 
-Section boundaries are not in the REST response (no LRC, §7). The app estimates them from lyric tags.
+**Memory:** base and turbo are each ~4.7 GB. Slot 2 (`ACESTEP_CONFIG_PATH2`) would keep both resident beside the 1.7B LM. `scripts/dev.sh` does not set it. Extend calls `POST /v1/init` with `{model, slot: 1, init_llm: true, lm_model_path}` which **replaces** the slot-1 DiT, then the same call with `acestep-v15-turbo` restores the fast path (including when the extend fails). Cost: the next forge pays a turbo reload. Peak weight RAM stays one DiT. `setup.sh` downloads base with `uv run acestep-download -m acestep-v15-base`. If that directory has no weight file, the extend route and the queue refuse the job and say how to install it. The engine is not asked to download weights mid-click.
+
+Section boundaries are not in the REST response (§7). Stored alignments override tag estimates.

@@ -11,6 +11,8 @@ import { z } from "zod";
 import { getQueue } from "@/lib/queue";
 import { getSong, songAudioAbsPath } from "@/lib/songs/queries";
 import { clampRepaintWindow, extendWindow } from "@/lib/songs/sections";
+import { env } from "@/lib/env";
+import { BASE_MODEL_MISSING, baseModelOnDisk } from "@/lib/engine/base-model";
 
 export const dynamic = "force-dynamic";
 
@@ -106,6 +108,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   if (parsed.data.extendS === undefined) {
     return NextResponse.json({ error: "Choose how many seconds to add." }, { status: 400 });
+  }
+  if (!env.MOCK_ENGINE && !baseModelOnDisk()) {
+    return NextResponse.json({ error: BASE_MODEL_MISSING }, { status: 400 });
   }
   const window = extendWindow(song.durationS, parsed.data.extendS);
   if ("error" in window) {
