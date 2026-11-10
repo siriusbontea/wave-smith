@@ -2,6 +2,10 @@
 
 **Local-first AI music studio** — describe a song, get full tracks with vocals, build a library, pull stems. Inspired by Suno-style workflows, but everything runs on your machine: no accounts, no cloud API, no telemetry.
 
+![Describe a song, with lyrics ready to forge](docs/screenshots/create-dark.png)
+
+Screenshots in this README are from demo mode. Playback is the bundled sample clip, not a generated track.
+
 | | |
 |---|---|
 | **Verified platform** | macOS on Apple Silicon (M-series, 32 GB RAM tested) |
@@ -22,6 +26,51 @@
 - **Settings** — engine health, storage stats, light/dark theme, local-only or optional Grok hybrid, unrestricted lyrics, optional test generation
 
 Optional **Generate Lyrics** uses a local [Ollama](https://ollama.com) model. If Ollama is not installed, that button hides and everything else still works.
+
+---
+
+## Screenshots
+
+**Library.** Takes in a grid, dark and light.
+
+![Library grid, dark](docs/screenshots/library-dark.png)
+
+![Library grid, light](docs/screenshots/library-light.png)
+
+**Song.** Waveform, cover, and the player.
+
+![Song page, dark](docs/screenshots/song-dark.png)
+
+![Song page, light](docs/screenshots/song-light.png)
+
+**Sections.** A verse timeline with estimated word chips.
+
+![Section timeline with word chips](docs/screenshots/sections-dark.png)
+
+**Make it longer.** Add 15 or 30 seconds onto the end.
+
+![Make it longer panel](docs/screenshots/extend-dark.png)
+
+**Parts and a notes file.** Vocals, drums, bass, other, and a downloadable notes file.
+
+![Parts of the song and a notes file](docs/screenshots/stems-dark.png)
+
+**Settings.** Engine status, with Grok hybrid selected and no key stored.
+
+![Settings, Grok hybrid](docs/screenshots/settings-dark.png)
+
+**On a phone** (390 px wide).
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/create-phone.png" width="280" alt="Create on a phone"></td>
+    <td><img src="docs/screenshots/song-phone.png" width="280" alt="Song page on a phone"></td>
+  </tr>
+  <tr>
+    <td>Create</td>
+    <td>Song</td>
+  </tr>
+</table>
 
 ---
 
