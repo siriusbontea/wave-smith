@@ -79,7 +79,7 @@ export async function GET() {
       model: BASE_DIT_MODEL,
       ready: env.MOCK_ENGINE || baseModelOnDisk(),
       hint: env.MOCK_ENGINE
-        ? "Demo mode reports a longer file without loading base weights."
+        ? "Demo mode plays one short sample. Edits do not change that audio."
         : baseModelOnDisk()
           ? "Base weights are on disk. Extend loads them in place of turbo, then restores turbo."
           : BASE_MODEL_MISSING,

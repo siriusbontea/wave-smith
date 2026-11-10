@@ -4,10 +4,12 @@
  */
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { usePlayer } from "@/lib/audio/store";
+import { fetchHealth } from "@/lib/client/api";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
@@ -24,6 +26,11 @@ export function PageFrame({ children }: { children: ReactNode }) {
 
 export function StudioNav() {
   const pathname = usePathname();
+  const { data: health } = useQuery({
+    queryKey: ["health"],
+    queryFn: ({ signal }) => fetchHealth(signal),
+    staleTime: 15_000,
+  });
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
       <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
@@ -39,7 +46,7 @@ export function StudioNav() {
                 href={link.href}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "rounded-md px-3 py-1.5 text-sm",
+                  "inline-flex min-h-6 items-center rounded-md px-3 py-1.5 text-sm",
                   active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 )}
               >
@@ -48,7 +55,17 @@ export function StudioNav() {
             );
           })}
         </nav>
-        <p className="ml-auto hidden text-xs text-muted-foreground sm:block">Local studio</p>
+        {health?.mockEngine ? (
+          <p
+            className="ml-auto rounded-full bg-amber-950 px-2.5 py-1 text-xs font-semibold text-white dark:bg-amber-100 dark:text-amber-950"
+            data-testid="demo-badge"
+          >
+            <span className="sm:hidden">Demo</span>
+            <span className="hidden sm:inline">Demo mode: sample audio, not generated</span>
+          </p>
+        ) : (
+          <p className="ml-auto hidden text-xs text-muted-foreground sm:block">On this computer</p>
+        )}
       </div>
     </header>
   );

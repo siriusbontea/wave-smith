@@ -5,6 +5,7 @@
  */
 import { CreateForm } from "@/components/create/create-form";
 import { QueueStrip } from "@/components/create/queue-strip";
+import { env } from "@/lib/env";
 
 export default function CreatePage() {
   return (
@@ -13,7 +14,9 @@ export default function CreatePage() {
         <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Create</p>
         <h1 className="mt-1 text-3xl font-semibold tracking-tight">Describe your song</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Forge a full track on this Mac, then open it in the library to edit a section or extend it.
+          {env.MOCK_ENGINE
+            ? "Demo mode plays a short sample clip. It does not generate a new song."
+            : "Forge a full track on this computer, then open it in the library to edit a section or extend it."}
         </p>
       </div>
       <div className="flex flex-col gap-6">

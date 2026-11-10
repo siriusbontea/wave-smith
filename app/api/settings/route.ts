@@ -69,7 +69,8 @@ export async function GET() {
       model: BASE_DIT_MODEL,
       ready: env.MOCK_ENGINE || baseModelOnDisk(),
     },
-    measuredGenerationS: 22.4,
+    // Null until this computer has a measured forge. README numbers are from one Mac.
+    measuredGenerationS: null as number | null,
   });
 }
 

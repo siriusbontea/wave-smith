@@ -88,9 +88,9 @@ export function LibraryView() {
           Favorites
         </Button>
         <div className="ml-auto flex items-center gap-2">
-          <a href="/api/library/export" download>
-            <Button variant="outline" size="sm">Export</Button>
-          </a>
+          <Button variant="outline" size="sm" asChild>
+            <a href="/api/library/export" download>Export</a>
+          </Button>
           <Button variant="outline" size="sm" onClick={() => fileInput.current?.click()}>
             <Upload className="size-4" /> Import
           </Button>

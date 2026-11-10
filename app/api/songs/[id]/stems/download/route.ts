@@ -20,16 +20,32 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     return NextResponse.json({ error: "Stems not ready — generate them first" }, { status: 404 });
   }
 
-  const entries = song.stems.map((s) => {
-    const abs = path.resolve(env.audioDir, s.path);
-    if (!abs.startsWith(env.audioDir + path.sep) || !fs.existsSync(abs)) {
-      throw new Error(`Stem file missing: ${s.stemName}`);
-    }
-    return { name: `${s.stemName}.wav`, abs };
-  });
+  let entries;
+  try {
+    entries = song.stems.map((s) => {
+      const abs = path.resolve(env.audioDir, s.path);
+      if (!abs.startsWith(env.audioDir + path.sep) || !fs.existsSync(abs)) {
+        throw new Error(`Stem file missing: ${s.stemName}`);
+      }
+      const ext = path.extname(abs) || ".wav";
+      return { name: `${s.stemName}${ext}`, abs };
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Could not read the stem files." },
+      { status: 404 },
+    );
+  }
 
   const zipPath = path.join(env.audioDir, id, "stems.zip");
-  await createStemsZip(entries, zipPath);
+  try {
+    await createStemsZip(entries, zipPath);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Could not build the stems download." },
+      { status: 500 },
+    );
+  }
 
   const stat = fs.statSync(zipPath);
   const stream = fs.createReadStream(zipPath);

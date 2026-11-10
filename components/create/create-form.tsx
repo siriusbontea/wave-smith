@@ -30,6 +30,7 @@ import {
   type ForgeParams,
   type LyricsResult,
 } from "@/lib/client/api";
+import { useHeldSubmit } from "@/lib/client/use-held-submit";
 import { VOCAL_LANGUAGES, VOCAL_LANGUAGE_LABELS, type VocalLanguage } from "@/lib/lyrics/language";
 
 /** Six one-click presets (spec §9.2). */
@@ -102,11 +103,17 @@ export function CreateForm() {
   const [planNote, setPlanNote] = useState<string | null>(null);
   const [lyricsNotice, setLyricsNotice] = useState<string | null>(null);
 
+  const held = useHeldSubmit();
+
   const forgeMutation = useMutation({
     mutationFn: forge,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      toast("Forging…", { description: "Track progress in the queue below. Audio stays on this Mac." });
+      toast("Forging…", {
+        description: health?.mockEngine
+          ? "Demo mode will save the sample clip. It does not generate new audio."
+          : "Track progress in the queue below. Audio stays on this computer.",
+      });
     },
     onError: (err) => toast.error("Couldn't start the forge", { description: err.message }),
   });
@@ -191,7 +198,7 @@ export function CreateForm() {
     return params;
   }
 
-  const canForge = prompt.trim().length > 0 && !forgeMutation.isPending && !healthError;
+  const canForge = prompt.trim().length > 0 && !forgeMutation.isPending && !held.busy && !healthError;
   const connection = health?.connection;
   const grokReady =
     connection?.mode === "grok" &&
@@ -205,7 +212,7 @@ export function CreateForm() {
   function onForgeKey(event: KeyboardEvent<HTMLTextAreaElement>) {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canForge) {
       event.preventDefault();
-      forgeMutation.mutate(buildParams());
+      void held.run(() => forgeMutation.mutateAsync(buildParams())).catch(() => undefined);
     }
   }
 
@@ -220,6 +227,7 @@ export function CreateForm() {
           data-testid="prompt-input"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
+          dir="auto"
           onKeyDown={onForgeKey}
           placeholder="A late-night drive song, warm bass, soft vocals…"
           rows={4}
@@ -364,15 +372,23 @@ export function CreateForm() {
             }
             rows={8}
             disabled={instrumental}
+            dir="auto"
             className="font-mono text-sm"
           />
+          <p className={lyrics.length > 10_000 ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+            {lyrics.length.toLocaleString()} / 10,000 characters
+            {lyrics.length > 10_000 ? ". Only the first 10,000 will be used." : ""}
+          </p>
+          {prompt.length > 2_000 ? (
+            <p className="text-xs text-destructive">The description is cut at 2,000 characters.</p>
+          ) : null}
           {planNote ? <p className="text-xs text-muted-foreground">{planNote}</p> : null}
           {lyricsNotice ? (
             <p className="text-xs text-muted-foreground" role="status">
               {lyricsNotice}
             </p>
           ) : null}
-          {connection?.lyricsPolicy === "unrestricted" && connection.mode === "grok" ? (
+          {lyricsNotice ? null : connection?.lyricsPolicy === "unrestricted" && connection.mode === "grok" ? (
             <p className="text-xs text-muted-foreground">
               Unrestricted lyrics stays on this machine — Grok is not used.
             </p>
@@ -477,8 +493,7 @@ export function CreateForm() {
 
       {healthError && (
         <p className="text-center text-sm text-destructive" data-testid="app-unreachable">
-          Cannot reach the Wavesmith API — run <code className="rounded bg-muted px-1">./scripts/dev.sh</code>{" "}
-          and open <code className="rounded bg-muted px-1">http://127.0.0.1:3000</code>.
+          Couldn&apos;t reach Wavesmith. Is it still running?
         </p>
       )}
       <Button
@@ -486,7 +501,9 @@ export function CreateForm() {
         data-testid="forge"
         className="h-12 text-base font-semibold"
         disabled={!canForge}
-        onClick={() => forgeMutation.mutate(buildParams())}
+        onClick={() => {
+          void held.run(() => forgeMutation.mutateAsync(buildParams())).catch(() => undefined);
+        }}
       >
         {forgeMutation.isPending ? "Starting…" : "Forge"}
       </Button>
