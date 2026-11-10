@@ -20,6 +20,8 @@ export default defineConfig({
   testDir: "./e2e",
   timeout: 60_000,
   retries: 0,
+  // One server and one library. Parallel workers would see each other's jobs.
+  workers: 1,
   use: {
     baseURL: "http://127.0.0.1:3100",
     trace: "retain-on-failure",

@@ -20,6 +20,7 @@ import { alignLyrics, editSong, fetchHealth, fetchJobs, type JobView } from "@/l
 import { useHeldSubmit } from "@/lib/client/use-held-submit";
 import { formatTime } from "@/lib/format";
 import { detectLyricsLanguage, VOCAL_LANGUAGE_LABELS, VOCAL_LANGUAGES, type VocalLanguage } from "@/lib/lyrics/language";
+import { ALIGNER_SETUP } from "@/lib/setup-hints";
 import type { LyricTimings } from "@/lib/lyrics/timings";
 import { replaceSectionBody, sectionsForTimeline } from "@/lib/songs/sections";
 
@@ -87,9 +88,13 @@ export function SectionEditor({
     .sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))[0];
 
   const editMutation = useMutation({
-    mutationFn: editSong.bind(null, songId),
-    onSuccess: () => {
+    mutationFn: (body: Parameters<typeof editSong>[1]) => editSong(songId, body),
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      if (result.merged) {
+        toast("Already started", { description: "That click was already queued." });
+        return;
+      }
       toast("Edit queued", {
         description: health?.mockEngine
           ? "Demo mode does not change the audio. Nothing new is saved."
@@ -134,9 +139,13 @@ export function SectionEditor({
   }, [jobs, songId, queryClient]);
 
   const alignMutation = useMutation({
-    mutationFn: () => alignLyrics(songId, language),
-    onSuccess: () => {
+    mutationFn: (idempotencyKey: string) => alignLyrics(songId, language, idempotencyKey),
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      if (result.merged) {
+        toast("Already started", { description: "That click was already queued." });
+        return;
+      }
       toast("Timing lyrics", { description: "Section cuts update when the alignment finishes." });
     },
     onError: (err) => toast.error("Couldn't time the lyrics", { description: err.message }),
@@ -203,12 +212,16 @@ export function SectionEditor({
           data-testid="align-lyrics"
           disabled={busy || !lyrics.trim()}
           onClick={() => {
-            void held.run(() => alignMutation.mutateAsync()).catch(() => undefined);
+            void held.run("align", (key) => alignMutation.mutateAsync(key)).catch(() => undefined);
           }}
         >
           {alignJob ? "Timing lyrics…" : "Time the lyrics"}
         </Button>
       </div>
+      <details className="mt-2 text-sm text-muted-foreground">
+        <summary className="cursor-pointer">If timing is not set up</summary>
+        <p className="mt-1">{ALIGNER_SETUP}</p>
+      </details>
       {alignJob ? <EditProgress job={alignJob} /> : null}
       {active ? <EditProgress job={active} /> : null}
       {freshEdit?.result && "demoUnchanged" in freshEdit.result && freshEdit.result.demoUnchanged ? (
@@ -247,20 +260,27 @@ export function SectionEditor({
                 No [verse] / [chorus] tags yet, so this rewrites the middle and keeps the intro and ending.
               </p>
             ) : null}
+            {timeline.source === "mock" ? (
+              <p id={`estimate-${section.index}`} className="sr-only">
+                These word times are estimates, not measured.
+              </p>
+            ) : null}
             {section.lines && section.lines.length > 0 ? (
               <ul className="mt-2 flex flex-col gap-1" dir="auto">
                 {(showAllLines ? section.lines : section.lines.slice(0, 6)).map((line) => (
                   <li key={`${line.startS}-${line.text}`} className="text-xs text-muted-foreground" dir="auto">
-                    <span className="tabular-nums">
-                      {timeline.source === "mock" ? "est. " : ""}
-                      {formatTime(line.startS)}
-                    </span>
-                    <span className="ml-2 text-foreground">{line.text}</span>
+                    <span className="tabular-nums">{formatTime(line.startS)}</span>
+                    <span className="ms-2 text-foreground">{line.text}</span>
                     {line.words.length > 1 ? (
-                      <span className="mt-1 flex flex-wrap gap-1" dir="auto">
+                      <span
+                        className="mt-1 flex flex-wrap gap-1"
+                        dir="auto"
+                        aria-describedby={timeline.source === "mock" ? `estimate-${section.index}` : undefined}
+                      >
                         {line.words.map((word, wordIndex) => (
                           <span
                             key={`${word.startS}-${wordIndex}`}
+                            dir="auto"
                             className={
                               timeline.source === "mock"
                                 ? "rounded border border-dashed border-muted-foreground/60 px-1.5 py-0.5"
@@ -272,7 +292,6 @@ export function SectionEditor({
                                 : `${formatTime(word.startS)}–${formatTime(word.endS)}`
                             }
                           >
-                            {timeline.source === "mock" ? "est. " : ""}
                             {word.text}
                           </span>
                         ))}
@@ -323,7 +342,7 @@ export function SectionEditor({
               aria-label={`Regenerate ${section.label}`}
               onClick={() => {
                 void held
-                  .run(() =>
+                  .run(`repaint-${section.index}`, (key) =>
                     editMutation.mutateAsync({
                       action: "repaint",
                       lyrics,
@@ -331,6 +350,7 @@ export function SectionEditor({
                       endS: section.endS,
                       sectionLabel: section.label,
                       vocalLanguage: language,
+                      idempotencyKey: key,
                     }),
                   )
                   .catch(() => undefined);
@@ -356,7 +376,7 @@ export function SectionEditor({
         </details>
         {health && !baseReady ? (
           <div className="mt-2 text-sm" role="status">
-            <p>Extend needs an extra download. Ask whoever set up Wavesmith to run setup.</p>
+            <p>Making it longer needs an extra download. Ask whoever set up Wavesmith to finish setup.</p>
             <details className="mt-1 text-muted-foreground">
               <summary className="cursor-pointer">Setup command</summary>
               <p className="mt-1">
@@ -402,13 +422,14 @@ export function SectionEditor({
               const extra = extendText.trim();
               const next = lyrics.trim() && extra ? `${lyrics.trim()}\n${extra}` : lyrics.trim() || extra;
               void held
-                .run(() =>
+                .run("extend", (key) =>
                   editMutation.mutateAsync({
                     action: "extend",
                     lyrics: next,
                     extendS,
                     sectionLabel: "extended",
                     vocalLanguage: language,
+                    idempotencyKey: key,
                   }),
                 )
                 .catch(() => undefined);

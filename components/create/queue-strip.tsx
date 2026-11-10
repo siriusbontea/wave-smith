@@ -10,9 +10,38 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { fetchJobs, type JobView } from "@/lib/client/api";
+
+const HIDDEN_JOBS_KEY = "wavesmith.hiddenJobs";
+const HIDDEN_EVENT = "wavesmith-hidden-jobs";
+
+function hiddenJobsSnapshot(): string {
+  return localStorage.getItem(HIDDEN_JOBS_KEY) ?? "";
+}
+
+function subscribeHiddenJobs(onChange: () => void): () => void {
+  window.addEventListener(HIDDEN_EVENT, onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    window.removeEventListener(HIDDEN_EVENT, onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+function rememberHidden(ids: string[]): void {
+  let current = new Set<string>();
+  try {
+    const raw = hiddenJobsSnapshot();
+    if (raw) current = new Set(JSON.parse(raw) as string[]);
+  } catch {
+    current = new Set();
+  }
+  for (const id of ids) current.add(id);
+  localStorage.setItem(HIDDEN_JOBS_KEY, JSON.stringify([...current]));
+  window.dispatchEvent(new Event(HIDDEN_EVENT));
+}
 
 const ACTIVE = new Set(["queued", "running"]);
 
@@ -27,7 +56,15 @@ export function QueueStrip() {
   // Toast once per finished job. Seeded lazily with the first fetch so a page
   // load doesn't re-announce history.
   const announcedRef = useRef<Set<string> | null>(null);
-  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  const hiddenRaw = useSyncExternalStore(subscribeHiddenJobs, hiddenJobsSnapshot, () => "");
+  const hidden = useMemo(() => {
+    if (!hiddenRaw) return new Set<string>();
+    try {
+      return new Set(JSON.parse(hiddenRaw) as string[]);
+    } catch {
+      return new Set<string>();
+    }
+  }, [hiddenRaw]);
   useEffect(() => {
     if (!jobs) return;
     if (announcedRef.current === null) {
@@ -59,9 +96,9 @@ export function QueueStrip() {
             },
           });
         } else if (job.type === "stems") {
-          toast.success("Stems ready");
+          toast.success("Parts are ready");
         } else if (job.type === "midi") {
-          toast.success("MIDI ready");
+          toast.success("Notes file is ready");
         } else if (job.type === "align") {
           toast.success("Lyrics timed");
         }
@@ -96,7 +133,7 @@ export function QueueStrip() {
           <button
             type="button"
             className="min-h-6 text-xs text-muted-foreground underline-offset-2 hover:underline"
-            onClick={() => setHidden(new Set(finished.map((job) => job.id)))}
+            onClick={() => rememberHidden(finished.map((job) => job.id))}
           >
             Clear finished
           </button>
@@ -144,10 +181,10 @@ function JobRow({ job, queuePosition }: { job: JobView; queuePosition: number })
         </span>
       )}
       {job.status === "succeeded" && job.type === "stems" && (
-        <span>Stems separated — open the song to download.</span>
+        <span>Parts are ready — open the song to listen.</span>
       )}
       {job.status === "succeeded" && job.type === "midi" && (
-        <span>MIDI transcribed — open the song to download.</span>
+        <span>Notes file is ready — open the song to download it.</span>
       )}
       {job.status === "succeeded" && job.type === "align" && (
         <span>Lyrics timed — section cuts follow those words.</span>

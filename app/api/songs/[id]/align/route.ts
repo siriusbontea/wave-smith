@@ -17,6 +17,7 @@ export const dynamic = "force-dynamic";
 const AlignSchema = z
   .object({
     vocalLanguage: z.string().max(10).default("en"),
+    idempotencyKey: z.string().min(8).max(80).optional(),
   })
   .strict();
 
@@ -66,6 +67,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const language = (VOCAL_LANGUAGES as readonly string[]).includes(parsed.data.vocalLanguage)
     ? parsed.data.vocalLanguage
     : "en";
-  const jobId = getQueue().enqueue("align", { songId: id, vocalLanguage: language });
-  return NextResponse.json({ jobId }, { status: 202 });
+  const placed = getQueue().submit("align", {
+    songId: id,
+    vocalLanguage: language,
+    idempotencyKey: parsed.data.idempotencyKey,
+  });
+  return NextResponse.json({ jobId: placed.id, merged: placed.merged }, { status: 202 });
 }

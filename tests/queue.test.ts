@@ -239,7 +239,7 @@ describe("Queue (mock engine)", () => {
     expect(lmCold.warmUpCalled).toBe(true);
   });
 
-  it("maps an offline engine to the actionable scripts/dev.sh message", async () => {
+  it("maps an offline engine to a plain message", async () => {
     class OfflineEngine extends MockEngineClient {
       override async health(): Promise<EngineHealth> {
         return {
@@ -254,7 +254,7 @@ describe("Queue (mock engine)", () => {
     const q = new Queue({ engine: new OfflineEngine(), pollMs: 5, timeoutMs: 5000 });
     const job = await waitForJob(q.enqueue("generate", payload()));
     expect(job.status).toBe("failed");
-    expect(job.error).toContain("scripts/dev.sh");
+    expect(job.error).toBe("The music engine is not running.");
   });
 
   it("fails an expired/unknown task via the poll timeout (ENGINE_NOTES §3 safety net)", async () => {
@@ -486,11 +486,35 @@ describe("Queue (mock engine)", () => {
     expect(db.select().from(schema.songs).all()).toHaveLength(before);
   });
 
-  it("returns the in-flight job when the same payload is enqueued twice", () => {
-    const first = queue.enqueue("generate", payload());
-    const second = queue.enqueue("generate", payload());
-    expect(second).toBe(first);
-    expect(db.select().from(schema.jobs).all()).toHaveLength(1);
+  it("merges a repeated click key and keeps a deliberate repeat", () => {
+    const body = payload();
+    const first = queue.submit("generate", { ...body, idempotencyKey: "click-one-aaaa" });
+    const twin = queue.submit("generate", { ...body, idempotencyKey: "click-one-aaaa" });
+    expect(twin.merged).toBe(true);
+    expect(twin.id).toBe(first.id);
+    const again = queue.submit("generate", { ...body, idempotencyKey: "click-two-bbbb" });
+    expect(again.merged).toBe(false);
+    expect(again.id).not.toBe(first.id);
+    const plain = queue.submit("generate", body);
+    expect(plain.merged).toBe(false);
+    expect(plain.id).not.toBe(again.id);
+    expect(db.select().from(schema.jobs).all()).toHaveLength(3);
+  });
+
+  it("re-times a song when the click key is new", () => {
+    const parent = insertParentSong();
+    const first = queue.submit("align", {
+      songId: parent.id,
+      vocalLanguage: "en",
+      idempotencyKey: "align-first-aa",
+    });
+    const second = queue.submit("align", {
+      songId: parent.id,
+      vocalLanguage: "en",
+      idempotencyKey: "align-second-bb",
+    });
+    expect(second.merged).toBe(false);
+    expect(second.id).not.toBe(first.id);
   });
 
   it("fails an extend that did not grow, instead of saving the original length", async () => {

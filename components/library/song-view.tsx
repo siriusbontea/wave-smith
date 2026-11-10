@@ -31,6 +31,7 @@ import {
   type MidiView,
   type SongView,
 } from "@/lib/client/api";
+import { NOTES_SETUP, PARTS_SETUP } from "@/lib/setup-hints";
 import { usePlayer } from "@/lib/audio/store";
 import { useHeldSubmit } from "@/lib/client/use-held-submit";
 import { formatDate, formatTime } from "@/lib/format";
@@ -187,16 +188,22 @@ export function SongView({ id }: { id: string }) {
   });
 
   const stemsMutation = useMutation({
-    mutationFn: () => forgeStems(id),
-    onSuccess: () => {
+    mutationFn: (idempotencyKey: string) => forgeStems(id, idempotencyKey),
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      toast.success("Stem separation queued", {
-        description: "This may take a few minutes on CPU. Playback can continue.",
+      if (result.merged) {
+        toast("Already started", { description: "That click was already queued." });
+        return;
+      }
+      toast.success("Splitting the song", {
+        description: health?.mockEngine
+          ? "Demo mode saves copies of the full song, not a real split."
+          : "This may take a few minutes. Playback can continue.",
       });
     },
     onError: (err) => {
       if (isAbortError(err)) return;
-      toast.error("Could not start stems", { description: err.message });
+      toast.error("Could not split the song", { description: err.message });
     },
   });
 
@@ -222,9 +229,14 @@ export function SongView({ id }: { id: string }) {
   }, [jobs, id, queryClient]);
 
   const midiMutation = useMutation({
-    mutationFn: (source: MidiSource) => forgeMidi(id, source),
-    onSuccess: () => {
+    mutationFn: (input: { source: MidiSource; idempotencyKey: string }) =>
+      forgeMidi(id, input.source, input.idempotencyKey),
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      if (result.merged) {
+        toast("Already started", { description: "That click was already queued." });
+        return;
+      }
       toast.success("Notes queued", {
         description: health?.mockEngine
           ? "Demo mode saves a sample notes file. It is not this song."
@@ -233,7 +245,7 @@ export function SongView({ id }: { id: string }) {
     },
     onError: (err) => {
       if (isAbortError(err)) return;
-      toast.error("Could not start MIDI", { description: err.message });
+      toast.error("Could not make the notes file", { description: err.message });
     },
   });
 
@@ -414,7 +426,8 @@ export function SongView({ id }: { id: string }) {
         </p>
         <details className="mt-1 text-sm text-muted-foreground">
           <summary className="cursor-pointer">How it works</summary>
-          <p className="mt-1">A local tool named Demucs does the split on this computer. It can take a few minutes.</p>
+          <p className="mt-1">A tool on this computer splits the song. It can take a few minutes.</p>
+          <p className="mt-1">Setup command: {PARTS_SETUP}</p>
         </details>
         {stemsJob ? <JobProgress job={stemsJob} label="stems" /> : null}
         {stemsReady ? (
@@ -438,11 +451,11 @@ export function SongView({ id }: { id: string }) {
             className="mt-4"
             data-testid="generate-stems"
             onClick={() => {
-              void held.run(() => stemsMutation.mutateAsync()).catch(() => undefined);
+              void held.run("stems", (key) => stemsMutation.mutateAsync(key)).catch(() => undefined);
             }}
             disabled={stemsMutation.isPending || held.busy || !!stemsJob}
           >
-            {stemsJob ? "Separating…" : "Generate stems"}
+            {stemsJob ? "Splitting…" : "Split into parts"}
           </Button>
         )}
       </section>
@@ -456,9 +469,8 @@ export function SongView({ id }: { id: string }) {
         </p>
         <details className="mt-1 text-sm text-muted-foreground">
           <summary className="cursor-pointer">How it works</summary>
-          <p className="mt-1">
-            A local tool named Basic Pitch guesses the notes on this computer. The file is saved with the song.
-          </p>
+          <p className="mt-1">A tool on this computer guesses the notes. The file is saved with the song.</p>
+          <p className="mt-1">Setup command: {NOTES_SETUP}</p>
         </details>
         {midiJob ? (
           <JobProgress
@@ -468,7 +480,7 @@ export function SongView({ id }: { id: string }) {
         ) : null}
         {midiJob?.midiSource && midiJob.midiSource !== midiSource ? (
           <p className="mt-2 text-xs text-muted-foreground">
-            Transcribing <span className="capitalize">{midiJob.midiSource === "master" ? "full mix" : midiJob.midiSource}</span>…
+            Making notes from <span className="capitalize">{midiJob.midiSource === "master" ? "the full song" : midiJob.midiSource}</span>…
           </p>
         ) : null}
         {(song.midi?.length ?? 0) > 0 ? (
@@ -490,7 +502,7 @@ export function SongView({ id }: { id: string }) {
         ) : null}
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <Select value={midiSource} onValueChange={(v) => setMidiSource(v as MidiSource)}>
-            <SelectTrigger className="w-36" aria-label="MIDI source" data-testid="midi-source-select">
+            <SelectTrigger className="w-36" aria-label="Which audio to turn into notes" data-testid="midi-source-select">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -504,17 +516,21 @@ export function SongView({ id }: { id: string }) {
           <Button
             data-testid="generate-midi"
             onClick={() => {
-              void held.run(() => midiMutation.mutateAsync(midiSource)).catch(() => undefined);
+              void held
+                .run(`notes-${midiSource}`, (key) =>
+                  midiMutation.mutateAsync({ source: midiSource, idempotencyKey: key }),
+                )
+                .catch(() => undefined);
             }}
             disabled={midiMutation.isPending || held.busy || !!midiJob}
           >
             {midiJob && midiJob.midiSource === midiSource
-              ? "Transcribing…"
+              ? "Making notes…"
               : midiJob
-                ? "Transcribing other source…"
+                ? "Making notes from another part…"
                 : midiBySource.get(midiSource)
-                  ? "Re-transcribe to MIDI"
-                  : "Transcribe to MIDI"}
+                  ? "Make the notes again"
+                  : "Make a notes file"}
           </Button>
         </div>
       </section>

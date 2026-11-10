@@ -21,6 +21,7 @@ const GenerateSchema = z
     vocalLanguage: z.string().max(10).optional(),
     variations: z.number().int().min(1).max(4).default(2),
     seed: z.number().int().min(0).max(0xffffffff).optional(),
+    idempotencyKey: z.string().min(8).max(80).optional(),
   })
   .strict();
 
@@ -38,6 +39,6 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  const jobId = getQueue().enqueue("generate", parsed.data);
-  return NextResponse.json({ jobId }, { status: 202 });
+  const placed = getQueue().submit("generate", parsed.data);
+  return NextResponse.json({ jobId: placed.id, merged: placed.merged }, { status: 202 });
 }

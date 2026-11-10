@@ -10,9 +10,12 @@ import { getQueue } from "@/lib/queue";
 
 export const dynamic = "force-dynamic";
 
-const BodySchema = z.object({
-  source: z.enum(MIDI_SOURCES),
-});
+const BodySchema = z
+  .object({
+    source: z.enum(MIDI_SOURCES),
+    idempotencyKey: z.string().min(8).max(80).optional(),
+  })
+  .strict();
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -21,7 +24,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     return NextResponse.json(
       {
         error:
-          "basic-pitch is not installed. Run ./scripts/setup.sh — MIDI transcription needs the basic-pitch CLI.",
+          "The tool that makes a notes file is not installed yet. Ask whoever set up Wavesmith to finish setup.",
       },
       { status: 503 },
     );
@@ -48,6 +51,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
   }
 
-  const jobId = getQueue().enqueue("midi", { songId: id, source: parsed.data.source });
-  return NextResponse.json({ jobId }, { status: 202 });
+  const placed = getQueue().submit("midi", {
+    songId: id,
+    source: parsed.data.source,
+    idempotencyKey: parsed.data.idempotencyKey,
+  });
+  return NextResponse.json({ jobId: placed.id, merged: placed.merged }, { status: 202 });
 }

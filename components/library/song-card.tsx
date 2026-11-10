@@ -96,19 +96,12 @@ export function SongCard({ song, view }: { song: SongView; view: "grid" | "list"
   }
 
   return (
-    <div
-      className="group flex flex-col gap-2 rounded-xl border bg-card p-3 hover:bg-accent/40"
-    >
-      <div className="relative aspect-square overflow-hidden rounded-lg">
-        <Link href={`/library/${song.id}`} className="block size-full" aria-label={song.title}>
+    <div className="group relative flex flex-col gap-2 rounded-xl border bg-card p-3 hover:bg-accent/40">
+      <Link href={`/library/${song.id}`} data-testid="song-item" className="flex min-w-0 flex-col gap-2">
+        <div className="relative aspect-square overflow-hidden rounded-lg">
           <CoverArt seed={song.artSeed} className="size-full" />
-        </Link>
-        <div className="absolute bottom-2 right-2 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-          {PlayButton}
         </div>
-      </div>
-      <div className="flex items-start justify-between gap-2">
-        <Link href={`/library/${song.id}`} data-testid="song-item" className="min-w-0">
+        <div className="min-w-0 pe-6">
           <p className="flex items-center gap-2 text-sm font-medium">
             <span className="truncate">{displayTitle}</span>
             {takeLabel ? (
@@ -116,9 +109,12 @@ export function SongCard({ song, view }: { song: SongView; view: "grid" | "list"
             ) : null}
           </p>
           {meta}
-        </Link>
-        {FavButton}
+        </div>
+      </Link>
+      <div className="absolute right-5 top-5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+        {PlayButton}
       </div>
+      <div className="absolute bottom-3 right-3">{FavButton}</div>
     </div>
   );
 }

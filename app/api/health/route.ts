@@ -13,7 +13,7 @@ import { getEngineClient } from "@/lib/engine";
 import { readGrokApiKey } from "@/lib/grok/secrets";
 import { getLyricsClient } from "@/lib/lyrics";
 import { env } from "@/lib/env";
-import { BASE_DIT_MODEL, BASE_MODEL_MISSING, baseModelOnDisk } from "@/lib/engine/base-model";
+import { BASE_DIT_MODEL, BASE_MODEL_SETUP, baseModelOnDisk } from "@/lib/engine/base-model";
 
 export const dynamic = "force-dynamic"; // health must never be statically cached
 
@@ -82,7 +82,7 @@ export async function GET() {
         ? "Demo mode plays one short sample. Edits do not change that audio."
         : baseModelOnDisk()
           ? "Base weights are on disk. Extend loads them in place of turbo, then restores turbo."
-          : BASE_MODEL_MISSING,
+          : BASE_MODEL_SETUP,
     },
     timestamp: Date.now(),
   });

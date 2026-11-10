@@ -10,12 +10,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { env } from "@/lib/env";
+import { PARTS_SETUP } from "@/lib/setup-hints";
 
+export { PARTS_SETUP };
 export const STEM_NAMES = ["vocals", "drums", "bass", "other"] as const;
 export type StemName = (typeof STEM_NAMES)[number];
 
 const DEMUCS_INSTALL_HINT =
-  'Run ./scripts/setup.sh — or: uv tool install --python 3.12 --with "torchaudio<2.9" --with soundfile demucs==4.0.1';
+  "The tool that splits a song into parts is not ready. Ask whoever set up Wavesmith to finish setup.";
 
 let cachedDemucsBin: string | null | undefined;
 
@@ -89,7 +91,7 @@ export async function separateStems(
   fs.rmSync(workDir, { recursive: true, force: true });
   fs.mkdirSync(workDir, { recursive: true });
 
-  onProgress?.(0.1, "Starting Demucs (CPU — this may take a few minutes)...");
+  onProgress?.(0.1, "Splitting the song. This can take a few minutes.");
   await assertDemucsAudioIo();
   await runDemucs(inputAbs, workDir);
   onProgress?.(0.85, "Collecting stem files...");
@@ -97,16 +99,20 @@ export async function separateStems(
   // demucs writes: <out>/htdemucs/<basename>/<stem>.wav
   const modelDir = path.join(workDir, "htdemucs");
   if (!fs.existsSync(modelDir)) {
-    throw new Error("Demucs produced no output — run scripts/setup.sh to install demucs");
+    throw new Error(
+      "Splitting the song did not produce any parts. Ask whoever set up Wavesmith to finish setup.",
+    );
   }
   const trackDirs = fs.readdirSync(modelDir).map((d) => path.join(modelDir, d));
   const trackDir = trackDirs[0];
-  if (!trackDir) throw new Error("Demucs output directory is empty");
+  if (!trackDir) {
+    throw new Error("Splitting the song did not produce any parts. Ask whoever set up Wavesmith to finish setup.");
+  }
 
   const out: Partial<Record<StemName, string>> = {};
   for (const name of STEM_NAMES) {
     const src = path.join(trackDir, `${name}.wav`);
-    if (!fs.existsSync(src)) throw new Error(`Demucs missing stem: ${name}`);
+    if (!fs.existsSync(src)) throw new Error(`A part is missing from the split (${name}).`);
     const dest = path.join(stemsDir, `${name}.wav`);
     fs.copyFileSync(src, dest);
     out[name] = dest;

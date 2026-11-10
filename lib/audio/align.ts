@@ -14,10 +14,12 @@ import os from "node:os";
 import path from "node:path";
 import { env } from "@/lib/env";
 import { mockTimings, parseAlignerPayload, type LyricTimings } from "@/lib/lyrics/timings";
+import { ALIGNER_SETUP } from "@/lib/setup-hints";
+
+export { ALIGNER_SETUP };
 
 export const ALIGNER_MISSING =
-  "Lyric alignment needs the local aligner. Run ./scripts/setup.sh (it creates .venv-align) " +
-  "or set ALIGN_PYTHON to a Python that has stable-ts installed.";
+  "Timing lyrics needs a setup step that is not finished. Ask whoever set up Wavesmith.";
 
 export function resolveAlignPython(): string | null {
   const candidates: string[] = [];
