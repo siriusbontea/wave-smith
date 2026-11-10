@@ -20,7 +20,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { asc, and, eq, or } from "drizzle-orm";
+import { asc, and, eq } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { getEngineClient } from "@/lib/engine";
 import {
@@ -45,6 +45,7 @@ import {
   baseModelOnDisk,
 } from "@/lib/engine/base-model";
 import { timingsToLrc } from "@/lib/lyrics/timings";
+import { matchesIdempotencyKey, readIdempotencyKey } from "@/lib/queue/idempotency";
 
 export { prepareGenerateJob } from "@/lib/queue/prepare-generate";
 export type { PreparedGenerateJob } from "@/lib/queue/prepare-generate";
@@ -62,6 +63,8 @@ export interface GenerateJobPayload {
   variations: number;
   /** Optional user seed — take i uses seed+i for reproducible variation sets. */
   seed?: number;
+  /** Same key inside the idempotency window is one click, not a second song. */
+  idempotencyKey?: string;
   /**
    * Section repaint or extend. The route fills srcAudioPath from the library
    * row — clients never send a filesystem path.
@@ -81,18 +84,27 @@ export interface GenerateJobPayload {
 /** Payload of a "stems" job — separate one song into four tracks. */
 export interface StemsJobPayload {
   songId: string;
+  idempotencyKey?: string;
 }
 
 /** Payload of a "midi" job — transcribe master or one stem to MIDI. */
 export interface MidiJobPayload {
   songId: string;
   source: MidiSource;
+  idempotencyKey?: string;
 }
 
 /** Payload of an "align" job — time the lyrics against the vocal or the mix. */
 export interface AlignJobPayload {
   songId: string;
   vocalLanguage: string;
+  idempotencyKey?: string;
+}
+
+export interface EnqueueResult {
+  id: string;
+  /** True when this call reused a job from the same click key. */
+  merged: boolean;
 }
 
 export interface QueueOptions {
@@ -141,21 +153,32 @@ export class Queue {
     type: "generate" | "stems" | "midi" | "align",
     payload: GenerateJobPayload | StemsJobPayload | MidiJobPayload | AlignJobPayload,
   ): string {
+    return this.submit(type as "generate", payload as GenerateJobPayload).id;
+  }
+
+  /** Like enqueue, but reports whether the click key reused an existing job. */
+  submit(type: "generate", payload: GenerateJobPayload): EnqueueResult;
+  submit(type: "stems", payload: StemsJobPayload): EnqueueResult;
+  submit(type: "midi", payload: MidiJobPayload): EnqueueResult;
+  submit(type: "align", payload: AlignJobPayload): EnqueueResult;
+  submit(
+    type: "generate" | "stems" | "midi" | "align",
+    payload: GenerateJobPayload | StemsJobPayload | MidiJobPayload | AlignJobPayload,
+  ): EnqueueResult {
     const serialized = JSON.stringify(payload);
-    // A second click of the same action, while the first is still queued or
-    // running, returns that job instead of starting a twin.
-    const inflight = db
-      .select()
-      .from(schema.jobs)
-      .where(
-        and(
-          eq(schema.jobs.type, type),
-          or(eq(schema.jobs.status, "queued"), eq(schema.jobs.status, "running")),
-        ),
-      )
-      .all();
-    const twin = inflight.find((job) => job.payload === serialized);
-    if (twin) return twin.id;
+    const incomingKey = readIdempotencyKey(serialized);
+    if (incomingKey) {
+      const now = Date.now();
+      const rows = db
+        .select()
+        .from(schema.jobs)
+        .where(eq(schema.jobs.type, type as "generate"))
+        .all();
+      const twin = rows.find((job) =>
+        matchesIdempotencyKey(readIdempotencyKey(job.payload), incomingKey, now - job.createdAt),
+      );
+      if (twin) return { id: twin.id, merged: true };
+    }
 
     const id = crypto.randomUUID();
     const songId =
@@ -177,7 +200,7 @@ export class Queue {
       })
       .run();
     this.ensureWorker();
-    return id;
+    return { id, merged: false };
   }
 
   /** Single-flight worker loop: drains queued jobs strictly one at a time.
@@ -233,7 +256,7 @@ export class Queue {
     } catch (err) {
       const message =
         err instanceof EngineOfflineError
-          ? "Engine offline — start it with scripts/dev.sh and try again."
+          ? "The music engine is not running."
           : err instanceof Error
             ? err.message
             : "Unknown error";

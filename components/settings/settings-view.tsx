@@ -89,9 +89,16 @@ export function SettingsView() {
   });
 
   const testForge = useMutation({
-    mutationFn: () => forge({ prompt: "short test jingle for health check", variations: 1, durationS: 10 }),
-    onSuccess: () => {
-      toast.success("Test generation queued — watch the queue on Create.");
+    mutationFn: (idempotencyKey: string) =>
+      forge({
+        prompt: "short test jingle for health check",
+        variations: 1,
+        durationS: 10,
+        idempotencyKey,
+      }),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      toast.success(result.merged ? "Already started" : "Test generation queued — watch the queue on Create.");
     },
     onError: (err) => toast.error("Test forge failed", { description: err.message }),
   });
@@ -146,7 +153,7 @@ export function SettingsView() {
           variant="outline"
           data-testid="test-generation"
           onClick={() => {
-            void held.run(() => testForge.mutateAsync()).catch(() => undefined);
+            void held.run("test", (key) => testForge.mutateAsync(key)).catch(() => undefined);
           }}
           disabled={testForge.isPending || held.busy}
         >

@@ -1,56 +1,55 @@
 /**
  * lib/client/use-held-submit.ts — one click, one job.
  *
- * isPending clears when the enqueue POST returns, which is faster than the
- * jobs list refetch. A second click in that gap used to queue a twin. The
- * button stays disabled until that job id shows up in /api/jobs.
+ * A second call for the same action inside a short window reuses the click
+ * key and does not start another request. The button stays disabled until
+ * that job id shows up in /api/jobs, including when the job has already
+ * finished. A later click gets a new key.
  */
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
+import { nextIntent } from "@/lib/client/intent";
 import { fetchJobs } from "@/lib/client/api";
 
 export function useHeldSubmit() {
-  const lock = useRef(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [holding, setHolding] = useState(false);
+  const intents = useRef(new Map<string, { key: string; at: number }>());
+  const [posting, setPosting] = useState(false);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const { data: jobs } = useQuery({
     queryKey: ["jobs"],
     queryFn: ({ signal }) => fetchJobs(signal),
-    refetchInterval: (query) =>
-      (query.state.data ?? []).some((job) => job.status === "queued" || job.status === "running")
-        ? 1000
-        : false,
+    refetchInterval: (query) => {
+      const rows = query.state.data ?? [];
+      const waiting = posting || (pendingId != null && !rows.some((job) => job.id === pendingId));
+      if (waiting) return 400;
+      const active = rows.some((job) => job.status === "queued" || job.status === "running");
+      return active ? 1000 : false;
+    },
   });
 
   const arrived = Boolean(pendingId && jobs?.some((job) => job.id === pendingId));
-  const busy = holding && !arrived;
+  const busy = (posting || pendingId != null) && !arrived;
 
-  function releaseLater() {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      lock.current = false;
-      setHolding(false);
-      setPendingId(null);
-    }, 8000);
-  }
-
-  async function run<T extends { jobId: string }>(start: () => Promise<T>): Promise<T | undefined> {
-    if (lock.current && !arrived) return undefined;
-    lock.current = true;
-    setHolding(true);
+  async function run<T extends { jobId: string }>(
+    action: string,
+    start: (idempotencyKey: string) => Promise<T>,
+  ): Promise<T | undefined> {
+    const previous = intents.current.get(action) ?? null;
+    const decision = nextIntent(previous, Date.now());
+    if (decision.reused) return undefined;
+    intents.current.set(action, { key: decision.key, at: decision.at });
+    setPosting(true);
     setPendingId(null);
-    releaseLater();
     try {
-      const result = await start();
+      const result = await start(decision.key);
       setPendingId(result.jobId);
+      setPosting(false);
       return result;
     } catch (err) {
-      lock.current = false;
-      setHolding(false);
-      if (timer.current) clearTimeout(timer.current);
+      setPosting(false);
+      setPendingId(null);
       throw err;
     }
   }

@@ -133,3 +133,17 @@
     @apply font-sans;
   }
 }
+
+/* Sonner sets width:100% and a left offset under 600px, which sticks past the screen. */
+@media (max-width: 600px) {
+  [data-sonner-toaster] {
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    padding-inline: 16px;
+    box-sizing: border-box;
+  }
+  [data-sonner-toaster] [data-sonner-toast] {
+    width: 100% !important;
+  }
+}

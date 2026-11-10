@@ -184,9 +184,14 @@ export type LyricsLanguageDetection =
   | { kind: "single"; language: VocalLanguage }
   | { kind: "mixed" };
 
+/** Bracketed structure tags ([verse], [chorus]) are not sung words. */
+export function lyricsWithoutTags(lyrics: string): string {
+  return lyrics.replace(/\[[^\]]*\]/g, " ");
+}
+
 /** Count letter-like characters per engine language via script heuristics. */
 export function detectLyricsLanguage(lyrics: string): LyricsLanguageDetection {
-  const text = lyrics.trim();
+  const text = lyricsWithoutTags(lyrics).trim();
   if (!text) return { kind: "none" };
 
   const counts = new Map<VocalLanguage, number>();

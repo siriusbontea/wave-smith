@@ -11,11 +11,13 @@ import os from "node:os";
 import path from "node:path";
 import { env } from "@/lib/env";
 import type { MIDI_SOURCES } from "@/db/schema";
+import { NOTES_SETUP } from "@/lib/setup-hints";
 
+export { NOTES_SETUP };
 export type MidiSource = (typeof MIDI_SOURCES)[number];
 
 const INSTALL_HINT =
-  'Run ./scripts/setup.sh — or: uv tool install --python 3.12 --with "setuptools<81" --with onnxruntime --with "scipy==1.11.4" "basic-pitch[onnx]"';
+  "The tool that makes a notes file is not ready. Ask whoever set up Wavesmith to finish setup.";
 
 let cachedBin: string | null | undefined;
 
@@ -128,7 +130,7 @@ export async function transcribeToMidi(
   fs.rmSync(workDir, { recursive: true, force: true });
   fs.mkdirSync(workDir, { recursive: true });
 
-  onProgress?.(0.15, "Loading Basic Pitch model (first run may take ~30s)...");
+  onProgress?.(0.15, "Making a notes file. The first time can take about half a minute.");
   await runBasicPitch(inputAbs, workDir, (line) => {
     if (line.includes("Predicting")) onProgress?.(0.35, "Analyzing audio…");
     else if (line.includes("Creating midi")) onProgress?.(0.75, "Writing MIDI notes…");
@@ -141,7 +143,7 @@ export async function transcribeToMidi(
     .filter((f) => f.endsWith(".mid") || f.endsWith(".midi"))
     .map((f) => path.join(workDir, f));
   if (produced.length === 0) {
-    throw new Error("basic-pitch produced no MIDI — try a shorter clip or a stem track");
+    throw new Error("No notes file was made. Try a shorter song, or one part of it.");
   }
   fs.copyFileSync(produced[0]!, destAbs);
   fs.rmSync(workDir, { recursive: true, force: true });

@@ -107,8 +107,12 @@ export function CreateForm() {
 
   const forgeMutation = useMutation({
     mutationFn: forge,
-    onSuccess: () => {
+    onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      if (result.merged) {
+        toast("Already started", { description: "That click was already queued." });
+        return;
+      }
       toast("Forging…", {
         description: health?.mockEngine
           ? "Demo mode will save the sample clip. It does not generate new audio."
@@ -212,7 +216,9 @@ export function CreateForm() {
   function onForgeKey(event: KeyboardEvent<HTMLTextAreaElement>) {
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && canForge) {
       event.preventDefault();
-      void held.run(() => forgeMutation.mutateAsync(buildParams())).catch(() => undefined);
+      void held
+        .run("forge", (key) => forgeMutation.mutateAsync({ ...buildParams(), idempotencyKey: key }))
+        .catch(() => undefined);
     }
   }
 
@@ -235,7 +241,12 @@ export function CreateForm() {
           aria-describedby="prompt-hint"
         />
         <p id="prompt-hint" className="mt-2 text-xs text-muted-foreground">
-          Write it like you would tell a friend. Press ⌘/Ctrl+Enter to forge. Audio is made on this computer.
+          Write it like you would tell a friend. Press ⌘/Ctrl+Enter to forge.
+          {health?.mockEngine
+            ? " Demo mode plays a short sample. It does not make a new song."
+            : health
+              ? " Audio is made on this computer."
+              : ""}
         </p>
 
         <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Song presets">
@@ -502,7 +513,9 @@ export function CreateForm() {
         className="h-12 text-base font-semibold"
         disabled={!canForge}
         onClick={() => {
-          void held.run(() => forgeMutation.mutateAsync(buildParams())).catch(() => undefined);
+          void held
+        .run("forge", (key) => forgeMutation.mutateAsync({ ...buildParams(), idempotencyKey: key }))
+        .catch(() => undefined);
         }}
       >
         {forgeMutation.isPending ? "Starting…" : "Forge"}

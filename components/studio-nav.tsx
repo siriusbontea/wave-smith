@@ -33,11 +33,11 @@ export function StudioNav() {
   });
   return (
     <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur">
-      <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-4 px-4">
+      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 sm:h-14 sm:gap-4 sm:px-4">
         <Link href="/" className="text-lg font-semibold tracking-tight">
           Wavesmith
         </Link>
-        <nav aria-label="Create, edit, and library" className="flex items-center gap-1">
+        <nav aria-label="Create, edit, and library" className="flex min-w-0 flex-wrap items-center gap-1">
           {LINKS.map((link) => {
             const active = link.current(pathname);
             return (
@@ -46,7 +46,7 @@ export function StudioNav() {
                 href={link.href}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "inline-flex min-h-6 items-center rounded-md px-3 py-1.5 text-sm",
+                  "inline-flex min-h-6 items-center rounded-md px-2 py-1.5 text-sm sm:px-3",
                   active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground",
                 )}
               >
@@ -55,10 +55,13 @@ export function StudioNav() {
             );
           })}
         </nav>
-        {health?.mockEngine ? (
+        {health == null ? (
+          <span className="ml-auto inline-flex min-h-6 shrink-0" data-testid="studio-status" />
+        ) : health.mockEngine ? (
           <p
-            className="ml-auto rounded-full bg-amber-950 px-2.5 py-1 text-xs font-semibold text-white dark:bg-amber-100 dark:text-amber-950"
+            className="ml-auto max-w-full shrink-0 rounded-full bg-amber-950 px-2 py-1 text-xs font-semibold text-white dark:bg-amber-100 dark:text-amber-950"
             data-testid="demo-badge"
+            title="Demo mode: sample audio, not generated"
           >
             <span className="sm:hidden">Demo</span>
             <span className="hidden sm:inline">Demo mode: sample audio, not generated</span>

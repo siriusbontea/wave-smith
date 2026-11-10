@@ -25,6 +25,7 @@ const EditSchema = z
     extendS: z.number().min(10).max(120).optional(),
     sectionLabel: z.string().trim().max(40).optional(),
     vocalLanguage: z.string().max(10).optional(),
+    idempotencyKey: z.string().min(8).max(80).optional(),
   })
   .strict();
 
@@ -84,12 +85,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         { status: 400 },
       );
     }
-    const jobId = getQueue().enqueue("generate", {
+    const placed = getQueue().submit("generate", {
       prompt: song.prompt,
       lyrics: parsed.data.lyrics,
       instrumental: false,
       variations: 1,
       durationS: song.durationS,
+      idempotencyKey: parsed.data.idempotencyKey,
       bpm: song.bpm ?? undefined,
       keyScale: song.keyScale ?? undefined,
       timeSignature,
@@ -103,7 +105,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
         sectionLabel: parsed.data.sectionLabel,
       },
     });
-    return NextResponse.json({ jobId }, { status: 202 });
+    return NextResponse.json({ jobId: placed.id, merged: placed.merged }, { status: 202 });
   }
 
   if (parsed.data.extendS === undefined) {
@@ -116,12 +118,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if ("error" in window) {
     return NextResponse.json({ error: window.error }, { status: 400 });
   }
-  const jobId = getQueue().enqueue("generate", {
+  const placed = getQueue().submit("generate", {
     prompt: song.prompt,
     lyrics: parsed.data.lyrics,
     instrumental: false,
     variations: 1,
     durationS: window.target,
+    idempotencyKey: parsed.data.idempotencyKey,
     bpm: song.bpm ?? undefined,
     keyScale: song.keyScale ?? undefined,
     timeSignature,
@@ -136,5 +139,5 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       sectionLabel: parsed.data.sectionLabel ?? "extended",
     },
   });
-  return NextResponse.json({ jobId }, { status: 202 });
+  return NextResponse.json({ jobId: placed.id, merged: placed.merged }, { status: 202 });
 }

@@ -186,15 +186,16 @@ export interface ForgeParams {
   variations?: number;
   seed?: number;
   vocalLanguage?: string;
+  idempotencyKey?: string;
 }
 
-export async function forge(params: ForgeParams): Promise<{ jobId: string }> {
+export async function forge(params: ForgeParams): Promise<{ jobId: string; merged: boolean }> {
   const res = await request("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
   });
-  return jsonOrThrow<{ jobId: string }>(res);
+  return jsonOrThrow<{ jobId: string; merged: boolean }>(res);
 }
 
 export interface LyricsResult {
@@ -230,13 +231,14 @@ export async function generateLyrics(params: {
 export async function alignLyrics(
   songId: string,
   vocalLanguage: string,
-): Promise<{ jobId: string }> {
+  idempotencyKey?: string,
+): Promise<{ jobId: string; merged: boolean }> {
   const res = await request(`/api/songs/${songId}/align`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ vocalLanguage }),
+    body: JSON.stringify({ vocalLanguage, idempotencyKey }),
   });
-  return jsonOrThrow<{ jobId: string }>(res);
+  return jsonOrThrow<{ jobId: string; merged: boolean }>(res);
 }
 
 export async function editSong(
@@ -249,14 +251,15 @@ export async function editSong(
     extendS?: number;
     sectionLabel?: string;
     vocalLanguage?: string;
+    idempotencyKey?: string;
   },
-): Promise<{ jobId: string }> {
+): Promise<{ jobId: string; merged: boolean }> {
   const res = await request(`/api/songs/${songId}/edit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return jsonOrThrow<{ jobId: string }>(res);
+  return jsonOrThrow<{ jobId: string; merged: boolean }>(res);
 }
 
 export async function enhance(params: {
@@ -308,19 +311,27 @@ export async function importLibrary(json: unknown): Promise<{ imported: number; 
   return jsonOrThrow<{ imported: number; missingAudio: number }>(res);
 }
 
-export async function forgeStems(songId: string): Promise<{ jobId: string }> {
-  const res = await request(`/api/songs/${songId}/stems`, { method: "POST" });
-  return jsonOrThrow<{ jobId: string }>(res);
+export async function forgeStems(
+  songId: string,
+  idempotencyKey?: string,
+): Promise<{ jobId: string; merged: boolean }> {
+  const res = await request(`/api/songs/${songId}/stems`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ idempotencyKey }),
+  });
+  return jsonOrThrow<{ jobId: string; merged: boolean }>(res);
 }
 
 export async function forgeMidi(
   songId: string,
   source: "master" | "vocals" | "drums" | "bass" | "other",
-): Promise<{ jobId: string }> {
+  idempotencyKey?: string,
+): Promise<{ jobId: string; merged: boolean }> {
   const res = await request(`/api/songs/${songId}/midi`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, idempotencyKey }),
   });
-  return jsonOrThrow<{ jobId: string }>(res);
+  return jsonOrThrow<{ jobId: string; merged: boolean }>(res);
 }

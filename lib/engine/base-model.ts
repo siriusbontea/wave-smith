@@ -8,6 +8,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { env } from "@/lib/env";
+import { BASE_MODEL_SETUP } from "@/lib/setup-hints";
+
+export { BASE_MODEL_SETUP };
 
 export const TURBO_DIT_MODEL = "acestep-v15-turbo";
 export const BASE_DIT_MODEL = "acestep-v15-base";
@@ -16,9 +19,10 @@ export const BASE_INFERENCE_STEPS = 50;
 export const BASE_GUIDANCE_SCALE = 7;
 
 export const BASE_MODEL_MISSING =
-  "Extend needs the ACE-Step base model (acestep-v15-base), and those weights are not on disk. " +
-  "Run ./scripts/setup.sh, or from the engine directory: uv run acestep-download -m acestep-v15-base. " +
-  "New songs still use turbo.";
+  "Making a song longer needs an extra download. Ask whoever set up Wavesmith to finish setup. New songs still work.";
+
+/** A real shard is gigabytes. A 1-byte or truncated file must not count as ready. */
+export const MIN_BASE_WEIGHT_BYTES = 1024 * 1024;
 
 export function baseCheckpointDir(engineDir = env.ENGINE_DIR): string {
   return path.resolve(engineDir, "checkpoints", BASE_DIT_MODEL);
@@ -33,10 +37,10 @@ function fileSize(abs: string): number {
   }
 }
 
-/** A weight shard counts only when it is a non-empty file in this directory. */
+/** A weight shard counts only when it is at least MIN_BASE_WEIGHT_BYTES. */
 function shardReady(dir: string, name: string): boolean {
   if (!name || name.includes("..") || name.includes("/") || name.includes("\\")) return false;
-  return fileSize(path.join(dir, name)) > 0;
+  return fileSize(path.join(dir, name)) >= MIN_BASE_WEIGHT_BYTES;
 }
 
 /**
@@ -70,7 +74,7 @@ export function baseModelOnDisk(engineDir = env.ENGINE_DIR): boolean {
   for (const name of names) {
     const weight = name.endsWith(".safetensors") || name.endsWith(".bin");
     const index = name.endsWith(".index.json");
-    if (weight && !index && fileSize(path.join(dir, name)) > 0) return true;
+    if (weight && !index && fileSize(path.join(dir, name)) >= MIN_BASE_WEIGHT_BYTES) return true;
   }
   return names.some((name) => name.endsWith(".index.json") && indexReady(dir, name));
 }

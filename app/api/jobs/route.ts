@@ -30,7 +30,7 @@ export async function GET() {
     let midiSource: string | null = null;
     let editKind: "repaint" | "extend" | null = null;
     let label =
-      row.type === "stems" ? "Stems" : row.type === "midi" ? "MIDI" : row.type === "align" ? "Lyrics" : "Forge";
+      row.type === "stems" ? "Parts" : row.type === "midi" ? "Notes" : row.type === "align" ? "Lyrics" : "Song";
     try {
       const payload = JSON.parse(row.payload) as {
         source?: string;
@@ -42,7 +42,7 @@ export async function GET() {
         label = "Section";
       } else if (payload.edit?.kind === "extend") {
         editKind = "extend";
-        label = "Extend";
+        label = "Longer";
       }
     } catch {
       midiSource = null;

@@ -25,6 +25,17 @@ describe("detectLyricsLanguage", () => {
     });
   });
 
+  it("ignores structure tags when the sung words are Japanese or Arabic", () => {
+    expect(detectLyricsLanguage("[verse]\nさくらがさいた\n[chorus]\nはな")).toEqual({
+      kind: "single",
+      language: "ja",
+    });
+    expect(detectLyricsLanguage("[verse]\nمرحبا يا قمر\n[chorus]\nليل")).toEqual({
+      kind: "single",
+      language: "ar",
+    });
+  });
+
   it("flags mixed English + Cyrillic as mixed", () => {
     const lyrics = `[verse]
 Howl with me through the static
