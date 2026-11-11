@@ -166,27 +166,101 @@ function remember(plan: BindPlan, port: number, server: http.Server | null, erro
 }
 
 let syncGeneration = 0;
-let syncTail: Promise<void> = Promise.resolve();
+let syncStarted = false;
+let syncWaiter: SyncWaiter | null = null;
+let activeRefresh: Promise<void> | null = null;
 let syncObserver: ((plan: BindPlan) => void) | null = null;
 
-/** Tests watch which plan a sync actually applies. Older generations are not applied. */
+interface SyncWaiter {
+  refresh: boolean;
+  gen: number;
+  promise: Promise<void>;
+  finish: () => void;
+}
+
+function createSyncWaiter(refresh: boolean, gen: number): SyncWaiter {
+  let finish = (): void => {};
+  let settled = false;
+  const promise = new Promise<void>((resolve) => {
+    finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+  });
+  return { refresh, gen, promise, finish };
+}
+
+/** Tests watch which plan a sync actually applies. A discarded poll is not applied. */
 export function setPhoneSyncObserverForTests(next: ((plan: BindPlan) => void) | null): void {
   syncObserver = next;
 }
 
+function pendingSyncWaiter(): SyncWaiter | null {
+  return syncWaiter;
+}
+
+function runSyncWaiter(job: SyncWaiter): void {
+  syncStarted = true;
+  syncWaiter = null;
+  if (job.refresh) activeRefresh = job.promise;
+  void (async () => {
+    try {
+      if (!job.refresh && job.gen !== syncGeneration) return;
+      await applyPhoneSync(job.gen, job.refresh);
+    } finally {
+      const next = pendingSyncWaiter();
+      // Captured before the next job starts. A poll that lost to Check again
+      // resolves only after that refresh applies, so the toast sees its result.
+      const followRefresh = !job.refresh && next?.refresh ? next.promise : null;
+      if (job.refresh && activeRefresh === job.promise) activeRefresh = null;
+      if (next) runSyncWaiter(next);
+      else syncStarted = false;
+      if (followRefresh) await followRefresh;
+      job.finish();
+    }
+  })();
+}
+
 /**
- * One sync at a time. A newer call bumps the generation so an older poll cannot
- * reopen a door that Check again already closed.
+ * One sync at a time. Check again (a refresh) takes precedence: a cache-only
+ * poll never bumps the generation and never applies over that refresh.
+ * While a refresh is pending, a poll waits for it and reuses its result.
  */
 export function syncPhoneGateway(options?: { refreshTailscale?: boolean }): Promise<void> {
   const refresh = options?.refreshTailscale === true;
+  if (!refresh) {
+    if (activeRefresh) return activeRefresh;
+    if (syncWaiter) return syncWaiter.promise;
+    if (syncStarted) {
+      syncWaiter = createSyncWaiter(false, syncGeneration);
+      return syncWaiter.promise;
+    }
+    const job = createSyncWaiter(false, syncGeneration);
+    runSyncWaiter(job);
+    return job.promise;
+  }
+
+  // Joining a refresh that is already running must not bump the generation,
+  // or that refresh would look stale and its close would be thrown away.
+  if (activeRefresh && !syncWaiter) return activeRefresh;
+  if (syncWaiter?.refresh) return syncWaiter.promise;
+
   const gen = ++syncGeneration;
-  const run = syncTail.then(() => applyPhoneSync(gen, refresh));
-  syncTail = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
+  if (syncWaiter && !syncWaiter.refresh) {
+    const poll = syncWaiter;
+    const job = createSyncWaiter(true, gen);
+    syncWaiter = job;
+    void job.promise.then(() => poll.finish());
+    return job.promise;
+  }
+  if (syncStarted) {
+    syncWaiter = createSyncWaiter(true, gen);
+    return syncWaiter.promise;
+  }
+  const job = createSyncWaiter(true, gen);
+  runSyncWaiter(job);
+  return job.promise;
 }
 
 /** A listening door whose Tailscale address is gone. Cache must not keep it up. */
@@ -210,10 +284,17 @@ async function applyPhoneSync(gen: number, refresh: boolean): Promise<void> {
   const left = closeBecauseTailscaleLeft(gen);
   if (gen !== syncGeneration) return;
   if (left && !refresh) return;
+  const openTailscale =
+    globalForGateway.__wavesmithPhone?.mode === "tailscale" &&
+    globalForGateway.__wavesmithPhone?.server?.listening === true;
+  // An open door does not trust a warm cache. A failed or timed-out CLI closes it.
   const plan = planPhoneBind({
     enabled: phoneAccessEnabled(),
     lan: lanOptIn(),
-    tailscale: await localTailscaleAddresses({ refresh }),
+    tailscale: await localTailscaleAddresses({
+      refresh,
+      revalidate: refresh || openTailscale,
+    }),
   });
   if (gen !== syncGeneration) return;
   if (plan.mode === "tailscale" && plan.host && !tailscaleHostStillLocal(plan.host)) {

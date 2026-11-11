@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { withWavesmithHeaders } from "@/lib/client/api";
+import { recheckNote } from "@/lib/phone/recheck-note";
 
 interface PhoneDevice {
   id: string;
@@ -63,17 +64,6 @@ function when(ms: number | null): string {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-function recheckNote(status: PhoneStatus): string {
-  if (!status.listening) return "Checked — no change, Tailscale still not found";
-  const raw = status.urls[0];
-  if (!raw) return "Still connected";
-  try {
-    return `Still connected at ${new URL(raw).hostname}`;
-  } catch {
-    return "Still connected";
-  }
 }
 
 function CodeClock({ expiresAt }: { expiresAt: number }) {

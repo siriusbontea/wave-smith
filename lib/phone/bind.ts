@@ -222,13 +222,19 @@ export function tailscaleHostStillLocal(host: string): boolean {
 /**
  * Tailscale addresses that are actually on this computer.
  * A positive cache can delay opening. It is re-checked against the live
- * interfaces on every call, so it cannot delay closing. `refresh` is Check again.
+ * interfaces on every call, so it cannot delay closing. `refresh` is Check again
+ * and replaces an in-flight probe. `revalidate` skips the cache but joins an
+ * in-flight probe, which is what an open door does on each poll.
  * A timeout or a missing CLI yields no address, and the door stays closed.
  */
-export async function localTailscaleAddresses(options?: { refresh?: boolean }): Promise<string[]> {
+export async function localTailscaleAddresses(options?: {
+  refresh?: boolean;
+  revalidate?: boolean;
+}): Promise<string[]> {
   const interfaces = readInterfaces();
   const cached = tailscaleCache;
-  if (!options?.refresh && cached && Date.now() - cached.at < TAILSCALE_CACHE_MS) {
+  const bypassCache = options?.refresh === true || options?.revalidate === true;
+  if (!bypassCache && cached && Date.now() - cached.at < TAILSCALE_CACHE_MS) {
     const live = liveFrom(cached.reported, interfaces);
     if (cached.reported.length > 0 && live.length < cached.reported.length) {
       // A negative signal shortens the cache immediately. Empty delays the next open.

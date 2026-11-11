@@ -27,7 +27,9 @@ import { gatewayStartAllowed } from "@/lib/phone/listen";
 import { assertLoopbackBaseUrl } from "@/lib/phone/loopback";
 import { mintId } from "@/lib/client/intent";
 import { installPeerStamp, peerIsLoopback, stampPeer } from "@/lib/phone/peer-stamp";
+import { recheckNote } from "@/lib/phone/recheck-note";
 import { gatewaySecret } from "@/lib/phone/secret";
+import { phoneStatus } from "@/lib/phone/status";
 import {
   currentInvite,
   deviceForToken,
@@ -762,6 +764,58 @@ setInterval(() => {}, 1000);
     await second;
     expect(applied).toEqual([false]);
     expect(phoneGatewayListening()).toBe(false);
+  });
+
+  async function warmOpenDoor(): Promise<{ cliCalls: () => number }> {
+    setPhoneAccessEnabled(true);
+    setInterfaceSourceForTests(() => [{ name: "utun4", address: "100.64.1.2" }]);
+    let mode: "up" | "down" = "up";
+    let calls = 0;
+    setTailscaleRunnerForTests(async () => {
+      calls += 1;
+      return mode === "up" ? "100.64.1.2\n" : "";
+    });
+    expect(await localTailscaleAddresses({ refresh: true })).toEqual(["100.64.1.2"]);
+    const door = http.createServer((_req, res) => res.end("ok"));
+    await listen(door);
+    adoptPhoneListenerForTests(door, "100.64.1.2");
+    expect(phoneGatewayListening()).toBe(true);
+    mode = "down";
+    const baseline = calls;
+    return { cliCalls: () => calls - baseline };
+  }
+
+  async function expectClosedByCli(cliCalls: () => number): Promise<void> {
+    expect(phoneGatewayListening()).toBe(false);
+    expect(cliCalls()).toBeGreaterThan(0);
+    const status = await phoneStatus(false);
+    expect(recheckNote(status)).toBe("Checked — no change, Tailscale still not found");
+  }
+
+  it("closes the door when a poll and Check again run in the same tick, poll first", async () => {
+    const { cliCalls } = await warmOpenDoor();
+    const poll = syncPhoneGateway();
+    const check = syncPhoneGateway({ refreshTailscale: true });
+    await poll;
+    await check;
+    await expectClosedByCli(cliCalls);
+  });
+
+  it("closes the door when Check again and a poll run in the same tick, check first", async () => {
+    const { cliCalls } = await warmOpenDoor();
+    const check = syncPhoneGateway({ refreshTailscale: true });
+    const poll = syncPhoneGateway();
+    await check;
+    await poll;
+    await expectClosedByCli(cliCalls);
+    expect(cliCalls()).toBe(4);
+  });
+
+  it("closes an open door when the CLI is down even if the address is still local", async () => {
+    const { cliCalls } = await warmOpenDoor();
+    await syncPhoneGateway();
+    await expectClosedByCli(cliCalls);
+    expect(cliCalls()).toBe(4);
   });
 
   it("does not forward X-Real-IP on a WebSocket upgrade", async () => {
