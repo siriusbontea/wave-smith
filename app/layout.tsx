@@ -4,7 +4,7 @@
  * time by next/font and self-hosted from .next afterward — no runtime
  * font requests, which keeps the local-first promise.
  */
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,19 @@ export const metadata: Metadata = {
   title: "Wavesmith",
   description:
     "Local-first AI music studio — describe a song, get full tracks with vocals. 100% on your machine.",
+  applicationName: "Wavesmith",
+  appleWebApp: {
+    capable: true,
+    title: "Wavesmith",
+    statusBarStyle: "black-translucent",
+  },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  themeColor: "#1c1917",
 };
 
 import { Providers } from "@/components/providers";

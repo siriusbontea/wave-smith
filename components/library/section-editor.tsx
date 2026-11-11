@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { alignLyrics, editSong, fetchHealth, fetchJobs, type JobView } from "@/lib/client/api";
+import { reportActionError } from "@/lib/client/report-error";
 import { useHeldSubmit } from "@/lib/client/use-held-submit";
 import { formatTime } from "@/lib/format";
 import { detectLyricsLanguage, VOCAL_LANGUAGE_LABELS, VOCAL_LANGUAGES, type VocalLanguage } from "@/lib/lyrics/language";
@@ -101,7 +102,7 @@ export function SectionEditor({
           : "A new song is saved when it finishes. The original stays.",
       });
     },
-    onError: (err) => toast.error("Couldn't start the edit", { description: err.message }),
+    onError: (err) => reportActionError("Couldn't start the edit", err),
   });
 
   const { data: health } = useQuery({
@@ -148,7 +149,7 @@ export function SectionEditor({
       }
       toast("Timing lyrics", { description: "Section cuts update when the alignment finishes." });
     },
-    onError: (err) => toast.error("Couldn't time the lyrics", { description: err.message }),
+    onError: (err) => reportActionError("Couldn't time the lyrics", err),
   });
 
   const busy = editMutation.isPending || held.busy || !!active || alignMutation.isPending || !!alignJob;
@@ -212,7 +213,9 @@ export function SectionEditor({
           data-testid="align-lyrics"
           disabled={busy || !lyrics.trim()}
           onClick={() => {
-            void held.run("align", (key) => alignMutation.mutateAsync(key)).catch(() => undefined);
+            void held
+              .run("align", (key) => alignMutation.mutateAsync(key))
+              .catch((err) => reportActionError("Couldn't time the lyrics", err));
           }}
         >
           {alignJob ? "Timing lyrics…" : "Time the lyrics"}
@@ -353,7 +356,7 @@ export function SectionEditor({
                       idempotencyKey: key,
                     }),
                   )
-                  .catch(() => undefined);
+                  .catch((err) => reportActionError("Couldn't start the edit", err));
               }}
             >
               Regenerate {section.label}
@@ -432,7 +435,7 @@ export function SectionEditor({
                     idempotencyKey: key,
                   }),
                 )
-                .catch(() => undefined);
+                .catch((err) => reportActionError("Couldn't start the edit", err));
             }}
           >
             Make it longer

@@ -50,6 +50,8 @@ function ensureAudio(set: (p: Partial<PlayerState>) => void): HTMLAudioElement {
   if (audio) return audio;
   const el = new Audio();
   el.preload = "metadata";
+  // iPhone Safari will not start inline playback without this hint.
+  el.setAttribute("playsinline", "true");
   el.addEventListener("timeupdate", () => set({ currentTime: el.currentTime }));
   el.addEventListener("durationchange", () =>
     set({ duration: Number.isFinite(el.duration) ? el.duration : 0 }),

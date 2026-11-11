@@ -86,6 +86,24 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+/** A phone that scanned a pairing code. The raw token is only in the phone's cookie. */
+export const phoneDevices = sqliteTable("phone_devices", {
+  id: text("id").primaryKey(),
+  label: text("label").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  createdAt: integer("created_at").notNull(),
+  lastSeenAt: integer("last_seen_at"),
+  lastAddress: text("last_address"),
+  userAgent: text("user_agent"),
+});
+
+/** One unused pairing code. Shown on the Mac until a phone redeems it. */
+export const phoneInvites = sqliteTable("phone_invites", {
+  id: text("id").primaryKey(),
+  code: text("code").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
 export type Song = typeof songs.$inferSelect;
 export type NewSong = typeof songs.$inferInsert;
 export type Job = typeof jobs.$inferSelect;

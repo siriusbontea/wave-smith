@@ -22,7 +22,7 @@ export function MiniPlayer() {
   return (
     <div
       data-testid="mini-player"
-      className="sticky bottom-0 z-20 flex flex-wrap items-center gap-3 border-t bg-card/95 px-4 py-2 backdrop-blur"
+      className="sticky bottom-0 z-20 flex flex-wrap items-center gap-3 border-t bg-card/95 px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] backdrop-blur"
     >
       <Link href={`/library/${current.id}`} className="flex min-w-0 items-center gap-3">
         <CoverArt seed={current.artSeed} className="size-11 shrink-0 rounded" />

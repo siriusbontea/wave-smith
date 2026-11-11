@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { db, schema } from "@/lib/db";
 import { eq } from "drizzle-orm";
+import { authorizeWrite, classifyRequest } from "@/lib/phone/access";
 import { env } from "@/lib/env";
 import path from "node:path";
 
@@ -54,6 +55,12 @@ const ImportSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  const kind = classifyRequest(req);
+  const write = authorizeWrite(req, kind);
+  if (!write.ok) return NextResponse.json({ error: write.error }, { status: write.status });
+  if (kind === "phone") {
+    return NextResponse.json({ error: "Import the library on the computer." }, { status: 403 });
+  }
   let body: unknown;
   try {
     body = await req.json();

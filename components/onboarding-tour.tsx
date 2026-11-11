@@ -9,7 +9,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { fetchHealth } from "@/lib/client/api";
+import { fetchHealth, withWavesmithHeaders } from "@/lib/client/api";
 
 interface SettingsView {
   settings: Record<string, string>;
@@ -22,11 +22,14 @@ async function fetchSettings(): Promise<SettingsView> {
 }
 
 async function completeOnboarding(): Promise<void> {
-  await fetch("/api/settings", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ onboardingComplete: true }),
-  });
+  await fetch(
+    "/api/settings",
+    withWavesmithHeaders({
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ onboardingComplete: true }),
+    }),
+  );
 }
 
 const STEPS = [

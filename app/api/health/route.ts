@@ -8,6 +8,10 @@
  * throws: a broken engine or db is a reported state, not a 500.
  */
 import { NextResponse } from "next/server";
+import { classifyRequest } from "@/lib/phone/access";
+import { phoneGatewayListening } from "@/lib/phone/gateway";
+import { INSTANCE_PROBE_HEADER } from "@/lib/phone/headers";
+import { instanceMark } from "@/lib/phone/secret";
 import { sql } from "drizzle-orm";
 import { getEngineClient } from "@/lib/engine";
 import { readGrokApiKey } from "@/lib/grok/secrets";
@@ -21,7 +25,7 @@ export const dynamic = "force-dynamic"; // health must never be statically cache
  *  under the UI's 1 s job polling without hammering Ollama. */
 let lyricsCache: { available: boolean; at: number } | null = null;
 
-export async function GET() {
+export async function GET(req?: Request) {
   let dbOk = false;
   try {
     // Importing lib/db opens the connection and applies migrations (idempotent).
@@ -49,6 +53,16 @@ export async function GET() {
     lyricsCache = { available, at: Date.now() };
   }
 
+  let phoneOn = false;
+  if (dbOk) {
+    try {
+      const phone = await import("@/lib/phone/store");
+      phoneOn = phone.phoneAccessEnabled();
+    } catch {
+      phoneOn = false;
+    }
+  }
+
   const grokKey = readGrokApiKey();
   let mode: "local" | "grok" = "local";
   let lyricsPolicy: "standard" | "unrestricted" = "standard";
@@ -62,7 +76,7 @@ export async function GET() {
     }
   }
 
-  return NextResponse.json({
+  const body = {
     app: "ok",
     version: "0.1.0",
     db: dbOk ? "ok" : "error",
@@ -84,6 +98,16 @@ export async function GET() {
           ? "Base weights are on disk. Extend loads them in place of turbo, then restores turbo."
           : BASE_MODEL_SETUP,
     },
+    phone: { enabled: phoneOn, listening: phoneOn && phoneGatewayListening() },
     timestamp: Date.now(),
-  });
+  };
+  const res = NextResponse.json(body);
+  if (
+    req &&
+    req.headers.get(INSTANCE_PROBE_HEADER) === "1" &&
+    classifyRequest(req) === "phone"
+  ) {
+    res.headers.set("x-wavesmith-instance", instanceMark());
+  }
+  return res;
 }

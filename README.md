@@ -59,7 +59,7 @@ Optional **Generate Lyrics** uses a local [Ollama](https://ollama.com) model. If
 
 ![Settings, Grok hybrid](docs/screenshots/settings-dark.png)
 
-**On a phone** (390 px wide).
+**Narrow screens** (390 px wide). These show the layout in a small window, not a paired phone. Pairing is in **Use it from your phone** below.
 
 <table>
   <tr>
@@ -170,6 +170,33 @@ First engine warm-up after boot takes about **45 seconds** with weights already 
 2. Enter a prompt (or click a preset)
 3. Click **Forge** (default: 2 variations)
 4. Watch the queue strip; when done, open **Library** to play
+
+### Use it from your phone
+
+The computer still makes the music. Tailscale is how a phone opens Wavesmith. It is off until you turn it on.
+
+1. Install Tailscale on the Mac and on the iPhone, and sign in to the same account.
+2. On the Mac, open **Settings** and choose **Turn on** under **Use from a phone**.
+3. On the iPhone, scan the code, then tap **Pair**.
+4. In Safari: Share → **Add to Home Screen**.
+5. **Turn off** closes the door and forgets every paired phone. **Remove** forgets one phone and leaves the door open.
+
+The code lasts 10 minutes. The header shows **Phone on** only while the door is actually open. If Tailscale is not signed in, Settings says so and nothing listens. If the phone sleeps, the queue keeps going on the computer.
+
+Home Wi-Fi is an extra switch in Settings. It is plain HTTP, and it does not come back after a restart. Open the address Settings shows. Do not use Tailscale Serve or Funnel, and do not forward the page. Steps and the exact rules are in [docs/PHONE.md](docs/PHONE.md).
+
+![Settings when Tailscale is not running: the phone door stays closed](docs/screenshots/phone-pair-mac.png)
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/phone-pair.png" width="280" alt="Pairing page on a phone"></td>
+    <td><img src="docs/screenshots/phone-create.png" width="280" alt="Create on a paired phone"></td>
+  </tr>
+  <tr>
+    <td>Before pairing</td>
+    <td>After pairing</td>
+  </tr>
+</table>
 
 ### Languages & lyrics
 

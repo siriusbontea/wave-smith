@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # scripts/dev.sh — start the engine + Next.js dev server concurrently with
 # prefixed logs. Ctrl-C (or SIGTERM from a supervisor) stops both, including
-# grandchildren. Both servers bind 127.0.0.1 ONLY — Wavesmith is local-first
-# and must never listen on LAN interfaces (also a prerequisite for the Tauri
-# wrap, spec §14).
+# grandchildren. The app and the engine bind 127.0.0.1 only. Phone access, if
+# you turn it on in Settings, listens on the Tailscale address (see
+# docs/PHONE.md). Do not point the engine at a LAN address.
 #
 # The engine is launched directly via `uv run acestep-api` — NOT via the
 # upstream start_api_server_macos.sh, which adds an interactive update-check

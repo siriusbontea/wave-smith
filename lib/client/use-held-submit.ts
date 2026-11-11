@@ -10,8 +10,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { nextIntent } from "@/lib/client/intent";
 import { fetchJobs } from "@/lib/client/api";
+import { nextIntent } from "@/lib/client/intent";
+import { reportActionError } from "@/lib/client/report-error";
 
 export function useHeldSubmit() {
   const intents = useRef(new Map<string, { key: string; at: number }>());
@@ -37,7 +38,13 @@ export function useHeldSubmit() {
     start: (idempotencyKey: string) => Promise<T>,
   ): Promise<T | undefined> {
     const previous = intents.current.get(action) ?? null;
-    const decision = nextIntent(previous, Date.now());
+    let decision: ReturnType<typeof nextIntent>;
+    try {
+      decision = nextIntent(previous, Date.now());
+    } catch (err) {
+      reportActionError("That didn't start", err);
+      return undefined;
+    }
     if (decision.reused) return undefined;
     intents.current.set(action, { key: decision.key, at: decision.at });
     setPosting(true);

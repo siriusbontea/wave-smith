@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # scripts/start.sh — production build + start (engine + app), localhost only.
+# Phone access, when turned on in Settings, listens on the Tailscale address. See docs/PHONE.md.
 # Same process supervision as dev.sh but with `next build && next start`.
 set -uo pipefail
 set -m # job control: each background job gets its own process group (cleanup relies on this)

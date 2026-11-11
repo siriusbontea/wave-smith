@@ -20,6 +20,7 @@ import fs from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { env } from "@/lib/env";
+import { assertLoopbackBaseUrl } from "@/lib/phone/loopback";
 import {
   type EngineClient,
   type EngineHealth,
@@ -61,7 +62,9 @@ interface ResultElement {
 }
 
 export class AceStepClient implements EngineClient {
-  constructor(private readonly baseUrl: string = env.ENGINE_URL) {}
+  constructor(private readonly baseUrl: string = env.ENGINE_URL) {
+    assertLoopbackBaseUrl(this.baseUrl, "ENGINE_URL");
+  }
 
   /** fetch wrapper: distinguishes offline (throw) from HTTP-level failures. */
   private async request<T>(

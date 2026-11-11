@@ -55,20 +55,31 @@ export function StudioNav() {
             );
           })}
         </nav>
-        {health == null ? (
-          <span className="ml-auto inline-flex min-h-6 shrink-0" data-testid="studio-status" />
-        ) : health.mockEngine ? (
-          <p
-            className="ml-auto max-w-full shrink-0 rounded-full bg-amber-950 px-2 py-1 text-xs font-semibold text-white dark:bg-amber-100 dark:text-amber-950"
-            data-testid="demo-badge"
-            title="Demo mode: sample audio, not generated"
-          >
-            <span className="sm:hidden">Demo</span>
-            <span className="hidden sm:inline">Demo mode: sample audio, not generated</span>
-          </p>
-        ) : (
-          <p className="ml-auto hidden text-xs text-muted-foreground sm:block">On this computer</p>
-        )}
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+          {health?.phone?.listening ? (
+            <Link
+              href="/settings"
+              className="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium"
+              data-testid="phone-on"
+            >
+              Phone on
+            </Link>
+          ) : null}
+          {health == null ? (
+            <span className="inline-flex min-h-6 shrink-0" data-testid="studio-status" />
+          ) : health.mockEngine ? (
+            <p
+              className="max-w-full shrink-0 rounded-full bg-amber-950 px-2 py-1 text-xs font-semibold text-white dark:bg-amber-100 dark:text-amber-950"
+              data-testid="demo-badge"
+              title="Demo mode: sample audio, not generated"
+            >
+              <span className="sm:hidden">Demo</span>
+              <span className="hidden sm:inline">Demo mode: sample audio, not generated</span>
+            </p>
+          ) : (
+            <p className="hidden text-xs text-muted-foreground sm:block">On this computer</p>
+          )}
+        </div>
       </div>
     </header>
   );
