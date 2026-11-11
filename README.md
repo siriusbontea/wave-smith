@@ -119,57 +119,59 @@ Optional **Generate Lyrics** uses a local [Ollama](https://ollama.com) model. If
 
 ---
 
-## Quickstart (new users)
+## Quickstart
 
-### 1. Clone
+One line installs Homebrew if you need it, then Node 22 or newer, pnpm, uv, ffmpeg, Python 3.12, and git. It clones Wavesmith to `~/Wavesmith`, downloads the music models, and adds the `wavesmith` command.
 
 ```bash
-git clone <your-repo-url> wavesmith
-cd wavesmith
+curl -fsSL https://raw.githubusercontent.com/siriusbontea/wave-smith/main/scripts/install.sh | bash
+wavesmith start
 ```
 
-### 2. One-time setup
+`wavesmith start` builds the app if it has not been built, starts the music engine and the page, and opens **http://127.0.0.1:3000** when the page answers. Nothing listens on the whole network. The first run takes a while because the models are about 10 GB. The browser shows that progress, with a percent and a time estimate once the download has a speed.
+
+Then:
+
+1. Type a prompt, or pick a preset.
+2. Click **Forge**.
+3. Open **Library** and play the song.
+
+| Command | What it does |
+|---------|----------------|
+| `wavesmith start` | Start the engine and the app, then open the browser |
+| `wavesmith stop` | Stop them |
+| `wavesmith status` | Say whether they are running |
+| `wavesmith open` | Open http://127.0.0.1:3000 |
+| `wavesmith update` | Update the app and keep your songs and `.env` |
+| `wavesmith doctor` | Check this Mac and print a fix for each problem |
+| `wavesmith logs` | Show the recent log |
+| `wavesmith uninstall` | Remove the app. It asks before deleting songs or models |
+
+The installer is safe to run again. It says what it is doing at each step.
+
+### Menu bar
+
+The installer also puts **Wavesmith.app** in `~/Applications`. Double-click it. A music-note icon appears in the menu bar: **Start**, **Stop**, **Open Wavesmith**, **Status**, **Launch at Login**, and **Quit**. Quit closes the icon. It does not stop the music. Launch at Login is off until you turn it on. It uses a login item for your user only, and that item does not contain passwords or API keys.
+
+The app is not signed. The first time, macOS may say it cannot be opened. **Right-click Wavesmith in Applications, choose Open, then Open.** You do that once.
+
+### If you are developing
 
 ```bash
-chmod +x scripts/*.sh
+git clone https://github.com/siriusbontea/wave-smith.git ~/Wavesmith
+cd ~/Wavesmith
 ./scripts/setup.sh
-```
-
-This is **idempotent** — safe to re-run. It will:
-
-1. Check Homebrew, Node, pnpm, uv, ffmpeg
-2. Copy `.env.example` → `.env` if missing
-3. Clone ACE-Step 1.5 at tag **v0.1.8** into `engine/ACE-Step-1.5`
-4. Run `uv sync` for engine Python deps
-5. Download model weights (~**10 GB**, the long step on first run)
-6. Install **Demucs** (stems) and **Basic Pitch** (MIDI) via `uv tool install`
-7. `pnpm install` + database migrate
-
-**Expect:** tens of minutes on first setup, mostly the model download.
-
-### 3. Start Wavesmith
-
-```bash
 ./scripts/dev.sh
 ```
 
-This starts **two processes**:
+`./scripts/dev.sh` is the hot-reload server. `wavesmith start` is the production server. Both bind **127.0.0.1** only.
 
-| Process | URL | Role |
-|---------|-----|------|
-| ACE-Step engine | `http://127.0.0.1:8001` | Music generation (GPU/MLX) |
-| Wavesmith app | **`http://127.0.0.1:3000`** | UI + API — **open this in your browser** |
+| Process | URL |
+|---------|-----|
+| Wavesmith | **http://127.0.0.1:3000** |
+| ACE-Step engine | http://127.0.0.1:8001 |
 
-> **Important:** The UI lives on port **3000**, not 8001. If you only start the engine, the browser will show API errors (404) when you click Forge.
-
-First engine warm-up after boot takes about **45 seconds** with weights already on disk. The status banner at the top explains offline / starting / ready states.
-
-### 4. Forge a song
-
-1. Open **http://127.0.0.1:3000**
-2. Enter a prompt (or click a preset)
-3. Click **Forge** (default: 2 variations)
-4. Watch the queue strip; when done, open **Library** to play
+The page is on port **3000**. Port 8001 is the engine, not the page. The first warm-up after boot is about **45 seconds** once the models are on disk.
 
 ### Use it from your phone
 
@@ -299,10 +301,10 @@ Forge completes instantly using the bundled `public/demo-clip.mp3` (about 10 sec
 ## Production run
 
 ```bash
-./scripts/start.sh   # pnpm build + engine + next start
+wavesmith start
 ```
 
-Same URLs: app on **3000**, engine on **8001**.
+Same URLs: the app on **127.0.0.1:3000**, the engine on **127.0.0.1:8001**. `wavesmith update` pulls, installs, migrates, and rebuilds without deleting `data/` or `.env`. `./scripts/start.sh` is the same production bind if you are already in the checkout.
 
 ---
 
@@ -310,11 +312,11 @@ Same URLs: app on **3000**, engine on **8001**.
 
 ### `Request failed (404)` when clicking Forge
 
-The **Next.js app is not running** (or you're on the wrong port). Run `./scripts/dev.sh` and use **http://127.0.0.1:3000**.
+The app is not running, or the browser is on the wrong port. Run `wavesmith start` and use **http://127.0.0.1:3000**. `wavesmith doctor` names the fix when a check fails.
 
 ### Banner says "Engine offline"
 
-Start both processes with `./scripts/dev.sh`, not the engine alone. Check engine logs prefixed with `[engine]`.
+Start both processes with `wavesmith start`, not the engine alone. `wavesmith logs` shows what they printed.
 
 ### Banner says "Engine starting…" for a long time
 
@@ -365,9 +367,11 @@ With engine running and weights loaded:
 
 | Script | When to use |
 |--------|-------------|
-| `scripts/setup.sh` | First time + after pulling updates that change engine pin |
+| `scripts/install.sh` | First install on a Mac, or a safe re-run |
+| `wavesmith` | Start, stop, update, doctor, logs |
+| `scripts/setup.sh` | Download models again without the full installer |
 | `scripts/dev.sh` | Daily development (engine + hot-reload app) |
-| `scripts/start.sh` | Production-style local run |
+| `scripts/start.sh` | Production-style local run without the `wavesmith` command |
 | `scripts/smoke.sh` | Verify full pipeline against real engine |
 
 ---
