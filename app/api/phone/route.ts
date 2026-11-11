@@ -24,6 +24,7 @@ export async function GET(req: Request) {
   const kind = classifyRequest(req);
   const denied = rejectedResponse(kind);
   if (denied) return denied;
+  // A poll joins an in-flight Check again instead of applying the warm cache over it.
   if (kind === "mac") await syncPhoneGateway();
   return NextResponse.json(await phoneStatus(kind === "phone"));
 }
@@ -83,7 +84,7 @@ export async function POST(req: Request) {
     setLanOptIn(false);
     await syncPhoneGateway();
   } else if (action === "recheck") {
-    await syncPhoneGateway();
+    await syncPhoneGateway({ refreshTailscale: true });
   } else if (action === "rename") {
     if (!deviceId || !name || !renameDevice(deviceId, name)) {
       return NextResponse.json({ error: "That phone is not paired." }, { status: 404 });

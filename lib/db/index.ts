@@ -12,6 +12,7 @@ import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import fs from "node:fs";
 import path from "node:path";
 import { env } from "@/lib/env";
+import { configureSqlite } from "@/lib/db/sqlite";
 import * as schema from "@/db/schema";
 
 type DB = BetterSQLite3Database<typeof schema>;
@@ -32,8 +33,10 @@ function createDb(): DB {
   }
   fs.mkdirSync(path.dirname(env.dbPath), { recursive: true });
   const sqlite = new Database(env.dbPath);
-  sqlite.pragma("journal_mode = WAL"); // readers don't block the queue worker's writes
-  sqlite.pragma("foreign_keys = ON"); // stems.song_id cascade relies on this
+  // WAL lets the queue worker write while a request reads. busy_timeout is set
+  // inside configureSqlite, before the mode switch, so parallel build workers
+  // wait instead of throwing SQLITE_BUSY.
+  configureSqlite(sqlite);
   const database = drizzle(sqlite, { schema });
   // Next's build collects pages in several workers. They must not apply one
   // migration at the same time.

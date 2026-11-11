@@ -2,7 +2,8 @@
  * lib/phone/peer-stamp.ts — record the real TCP peer before any handler runs.
  *
  * Next copies a client-supplied X-Forwarded-For when one is present, so that
- * header is not the peer. This overwrites a private header from the socket.
+ * header is not the peer. X-Real-IP is the same kind of hint. This overwrites
+ * a private header from the socket and drops the client address headers.
  * Loaded from next.config so the patch is in place before the server listens.
  */
 import http from "node:http";
@@ -30,18 +31,26 @@ export function stampPeer(req: http.IncomingMessage): void {
   const peer = req.socket?.remoteAddress ?? "";
   const forwarded = headerValue(req.headers["x-forwarded-for"]);
   marked[ORIGINAL_FORWARDED_FOR] = forwarded ?? "";
-  const firstForwarded = forwarded?.split(",")[0]?.trim() ?? "";
   const tailscaleUser =
     headerValue(req.headers["tailscale-user-login"]) || headerValue(req.headers["tailscale-user-name"]);
-  const forwardedDiffers =
-    firstForwarded.length > 0 && normalizeIp(firstForwarded) !== normalizeIp(peer);
-  if (tailscaleUser || forwardedDiffers || headerValue(req.headers.forwarded)) {
+  // X-Real-IP alone is the same signal as a forged X-Forwarded-For: the
+  // header names some other address than the socket, so this is not the Mac.
+  const proxyIndicated =
+    differsFromPeer(forwarded, peer) ||
+    differsFromPeer(headerValue(req.headers["x-real-ip"]), peer);
+  if (tailscaleUser || proxyIndicated || headerValue(req.headers.forwarded)) {
     req.headers[VIA_PROXY_HEADER] = "1";
   } else {
     delete req.headers[VIA_PROXY_HEADER];
   }
+  delete req.headers["x-real-ip"];
   req.headers[PEER_HEADER] = peer;
   req.headers["x-forwarded-for"] = peer;
+}
+
+function differsFromPeer(value: string | undefined, peer: string): boolean {
+  const first = value?.split(",")[0]?.trim() ?? "";
+  return first.length > 0 && normalizeIp(first) !== normalizeIp(peer);
 }
 
 export function installPeerStamp(): void {

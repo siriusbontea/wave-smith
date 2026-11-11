@@ -5,7 +5,7 @@
  * choice for this run of the app. A restart clears that choice so "on" does
  * not follow the laptop onto a café network.
  */
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import os from "node:os";
 import { isLoopbackHost, normalizeIp } from "@/lib/phone/loopback";
 
@@ -93,23 +93,83 @@ function namedInterfaces(): NamedInterface[] {
   return found;
 }
 
-function tailscaleCommandAddresses(): string[] {
-  const found: string[] = [];
-  for (const bin of TAILSCALE_BINS) {
-    for (const flag of ["-4", "-6"]) {
+const TAILSCALE_TIMEOUT_MS = 2_000;
+const TAILSCALE_KILL_AFTER_MS = TAILSCALE_TIMEOUT_MS + 500;
+const TAILSCALE_CACHE_MS = 30_000;
+
+type TailscaleFlag = "-4" | "-6";
+type TailscaleRunner = (bin: string, flag: TailscaleFlag) => Promise<string>;
+
+function defaultTailscaleRunner(bin: string, flag: TailscaleFlag): Promise<string> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
+      resolve(value);
+    };
+    // timeout sends SIGTERM. A child that ignores it must still die, and the
+    // lookup must fail closed at the deadline even if the process has not exited.
+    const child = execFile(
+      bin,
+      ["ip", flag],
+      { timeout: TAILSCALE_TIMEOUT_MS, killSignal: "SIGTERM", encoding: "utf8" },
+      (err, stdout) => {
+        if (err || typeof stdout !== "string") finish("");
+        else finish(stdout);
+      },
+    );
+    const killTimer = setTimeout(() => {
       try {
-        const out = execFileSync(bin, ["ip", flag], {
-          timeout: 1500,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-        });
-        found.push(...out.split(/\s+/).filter(Boolean));
+        child.kill("SIGKILL");
       } catch {
-        // This binary is missing or Tailscale is signed out. Try the next one.
+        // The process already exited.
       }
-    }
-  }
-  return found;
+      finish("");
+    }, TAILSCALE_KILL_AFTER_MS);
+  });
+}
+
+let tailscaleRunner: TailscaleRunner = defaultTailscaleRunner;
+let interfaceSource: () => NamedInterface[] = namedInterfaces;
+/** Raw CLI output. Re-checked against live interfaces on every read. */
+let tailscaleCache: { at: number; reported: string[] } | null = null;
+let tailscaleInflight: Promise<string[]> | null = null;
+let tailscaleLookupGen = 0;
+
+/** Tests replace the CLI. Production keeps execFile, which does not block the event loop. */
+export function setTailscaleRunnerForTests(next: TailscaleRunner | null): void {
+  tailscaleRunner = next ?? defaultTailscaleRunner;
+  tailscaleCache = null;
+  tailscaleInflight = null;
+  tailscaleLookupGen += 1;
+}
+
+/** Tests substitute the interface list. Production reads os.networkInterfaces. */
+export function setInterfaceSourceForTests(next: (() => NamedInterface[]) | null): void {
+  interfaceSource = next ?? namedInterfaces;
+}
+
+function readInterfaces(): NamedInterface[] {
+  return interfaceSource();
+}
+
+async function tailscaleCommandAddresses(): Promise<string[]> {
+  const flags: TailscaleFlag[] = ["-4", "-6"];
+  const outputs = await Promise.all(
+    TAILSCALE_BINS.flatMap((bin) =>
+      flags.map(async (flag) => {
+        try {
+          return await tailscaleRunner(bin, flag);
+        } catch {
+          // Timeout, missing binary, or signed out. An empty result keeps the door closed.
+          return "";
+        }
+      }),
+    ),
+  );
+  return outputs.flatMap((out) => out.split(/\s+/).filter(Boolean));
 }
 
 function inTailscaleRange(address: string): boolean {
@@ -140,17 +200,76 @@ export function confirmedTailscaleAddresses(input: {
   return [...new Set([...fromCli, ...fromDevice])];
 }
 
-let tailscaleCache: { at: number; ips: string[] } | null = null;
+function liveFrom(reported: string[], interfaces: NamedInterface[]): string[] {
+  return confirmedTailscaleAddresses({ reported, interfaces });
+}
 
-/** Tailscale addresses that are actually on this computer. Cached for a few seconds. */
-export function localTailscaleAddresses(): string[] {
-  if (tailscaleCache && Date.now() - tailscaleCache.at < 5000) return tailscaleCache.ips;
-  const ips = confirmedTailscaleAddresses({
-    reported: tailscaleCommandAddresses(),
-    interfaces: namedInterfaces(),
+/**
+ * Drop a positive cache. The empty result may delay the next open.
+ * It must not keep a door open.
+ */
+export function forgetTailscaleCache(): void {
+  tailscaleCache = { at: Date.now(), reported: [] };
+  tailscaleLookupGen += 1;
+}
+
+/** True when this host is still one Tailscale would bind right now. */
+export function tailscaleHostStillLocal(host: string): boolean {
+  const reported = tailscaleCache?.reported ?? [];
+  return liveFrom(reported, readInterfaces()).some((ip) => normalizeIp(ip) === normalizeIp(host));
+}
+
+/**
+ * Tailscale addresses that are actually on this computer.
+ * A positive cache can delay opening. It is re-checked against the live
+ * interfaces on every call, so it cannot delay closing. `refresh` is Check again
+ * and replaces an in-flight probe. `revalidate` skips the cache but joins an
+ * in-flight probe, which is what an open door does on each poll.
+ * A timeout or a missing CLI yields no address, and the door stays closed.
+ */
+export async function localTailscaleAddresses(options?: {
+  refresh?: boolean;
+  revalidate?: boolean;
+}): Promise<string[]> {
+  const interfaces = readInterfaces();
+  const cached = tailscaleCache;
+  const bypassCache = options?.refresh === true || options?.revalidate === true;
+  if (!bypassCache && cached && Date.now() - cached.at < TAILSCALE_CACHE_MS) {
+    const live = liveFrom(cached.reported, interfaces);
+    if (cached.reported.length > 0 && live.length < cached.reported.length) {
+      // A negative signal shortens the cache immediately. Empty delays the next open.
+      tailscaleCache = { at: Date.now(), reported: live };
+    }
+    return live;
+  }
+  if (tailscaleInflight) {
+    const pending = tailscaleInflight;
+    if (!options?.refresh) return pending;
+    tailscaleLookupGen += 1;
+    await pending;
+    if (tailscaleInflight) return tailscaleInflight;
+  }
+  const gen = ++tailscaleLookupGen;
+  const run = (async () => {
+    let reported: string[] = [];
+    try {
+      reported = await tailscaleCommandAddresses();
+    } catch {
+      reported = [];
+    }
+    if (gen !== tailscaleLookupGen) {
+      return liveFrom(tailscaleCache?.reported ?? [], readInterfaces());
+    }
+    const live = liveFrom(reported, readInterfaces());
+    // Keep the raw CLI lines when they still confirm, so the next read can
+    // notice an interface disappearing. A failed probe stores nothing.
+    tailscaleCache = { at: Date.now(), reported: live.length === 0 ? [] : reported };
+    return live;
+  })().finally(() => {
+    if (tailscaleInflight === run) tailscaleInflight = null;
   });
-  tailscaleCache = { at: Date.now(), ips };
-  return ips;
+  tailscaleInflight = run;
+  return run;
 }
 
 export interface NamedAddress {
