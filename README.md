@@ -126,7 +126,7 @@ One line installs Homebrew if you need it, then Node 22 or newer, pnpm, uv, ffmp
 The address is a commit, not the moving `main` branch. When `scripts/install.sh` changes, commit that change, then point this line at that commit in a follow-up that only updates the pin. The Homebrew installer inside the script has its own pinned commit; the note at the top of `scripts/install.sh` says how to bump that one.
 
 ```bash
-curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/siriusbontea/wave-smith/b340e51de2eb3166fd520daeedcbb6e113179782/scripts/install.sh | bash
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/siriusbontea/wave-smith/98a3e9d035ee32c84c6778321783600e5854145c/scripts/install.sh | bash
 wavesmith start
 ```
 
