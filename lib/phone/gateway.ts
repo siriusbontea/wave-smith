@@ -9,7 +9,14 @@ import http from "node:http";
 import { isJsonMediaType, originMatchesHost } from "@/lib/phone/access";
 import { GATEWAY_SECRET_HEADER, INSTANCE_PROBE_HEADER, WAVESMITH_REQUEST_HEADER } from "@/lib/phone/headers";
 import { assertLoopbackBaseUrl, isLoopbackHost, normalizeIp } from "@/lib/phone/loopback";
-import { lanOptIn, localTailscaleAddresses, planPhoneBind, type BindPlan } from "@/lib/phone/bind";
+import {
+  forgetTailscaleCache,
+  lanOptIn,
+  localTailscaleAddresses,
+  planPhoneBind,
+  tailscaleHostStillLocal,
+  type BindPlan,
+} from "@/lib/phone/bind";
 import { deviceCookie, deviceLabel, PHONE_COOKIE, readCookie } from "@/lib/phone/codes";
 import { detectListens, gatewayStartAllowed } from "@/lib/phone/listen";
 import { gatewaySecret, instanceMark } from "@/lib/phone/secret";
@@ -158,13 +165,67 @@ function remember(plan: BindPlan, port: number, server: http.Server | null, erro
   };
 }
 
-/** Open or close the listener so it matches Tailscale (or this run's Wi-Fi choice). */
-export async function syncPhoneGateway(options?: { refreshTailscale?: boolean }): Promise<void> {
+let syncGeneration = 0;
+let syncTail: Promise<void> = Promise.resolve();
+let syncObserver: ((plan: BindPlan) => void) | null = null;
+
+/** Tests watch which plan a sync actually applies. Older generations are not applied. */
+export function setPhoneSyncObserverForTests(next: ((plan: BindPlan) => void) | null): void {
+  syncObserver = next;
+}
+
+/**
+ * One sync at a time. A newer call bumps the generation so an older poll cannot
+ * reopen a door that Check again already closed.
+ */
+export function syncPhoneGateway(options?: { refreshTailscale?: boolean }): Promise<void> {
+  const refresh = options?.refreshTailscale === true;
+  const gen = ++syncGeneration;
+  const run = syncTail.then(() => applyPhoneSync(gen, refresh));
+  syncTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/** A listening door whose Tailscale address is gone. Cache must not keep it up. */
+function closeBecauseTailscaleLeft(gen: number): boolean {
+  const current = globalForGateway.__wavesmithPhone;
+  if (!current?.server?.listening || current.mode !== "tailscale" || !current.host) return false;
+  if (tailscaleHostStillLocal(current.host)) return false;
+  forgetTailscaleCache();
+  if (gen !== syncGeneration) return true;
+  stopPhoneGateway();
+  const closed = planPhoneBind({ enabled: phoneAccessEnabled(), lan: false, tailscale: [] });
+  remember(closed, phoneListenPort(), null, closed.reason);
+  syncObserver?.(closed);
+  return true;
+}
+
+async function applyPhoneSync(gen: number, refresh: boolean): Promise<void> {
+  if (gen !== syncGeneration) return;
+  // Interface loss closes before any CLI wait. The cache may delay opening only.
+  // Check again still probes, so a returned address can open in this same sync.
+  const left = closeBecauseTailscaleLeft(gen);
+  if (gen !== syncGeneration) return;
+  if (left && !refresh) return;
   const plan = planPhoneBind({
     enabled: phoneAccessEnabled(),
     lan: lanOptIn(),
-    tailscale: await localTailscaleAddresses({ refresh: options?.refreshTailscale }),
+    tailscale: await localTailscaleAddresses({ refresh }),
   });
+  if (gen !== syncGeneration) return;
+  if (plan.mode === "tailscale" && plan.host && !tailscaleHostStillLocal(plan.host)) {
+    forgetTailscaleCache();
+    if (gen !== syncGeneration) return;
+    const closed = planPhoneBind({ enabled: phoneAccessEnabled(), lan: false, tailscale: [] });
+    stopPhoneGateway();
+    remember(closed, phoneListenPort(), null, closed.reason);
+    syncObserver?.(closed);
+    return;
+  }
+  syncObserver?.(plan);
   const port = phoneListenPort();
   if (!plan.listen || !plan.host) {
     stopPhoneGateway();
@@ -176,6 +237,7 @@ export async function syncPhoneGateway(options?: { refreshTailscale?: boolean })
   stopPhoneGateway();
   const upstreamPort = appListenPort();
   const upstream = await verifyUpstream(upstreamPort);
+  if (gen !== syncGeneration) return;
   if (!upstream.ok) {
     remember(plan, port, null, upstream.reason);
     return;
@@ -188,14 +250,30 @@ export async function syncPhoneGateway(options?: { refreshTailscale?: boolean })
   }
   try {
     const server = await startPhoneGateway({ host: plan.host, port, upstreamPort });
+    if (gen !== syncGeneration) {
+      server.close();
+      return;
+    }
     remember(plan, port, server, null);
   } catch (err) {
+    if (gen !== syncGeneration) return;
     const raw = err instanceof Error ? err.message : "Could not open phone access.";
     const message = raw.includes("EADDRINUSE")
       ? `Port ${port} is already in use. Close the other program, or set PHONE_PORT.`
       : raw;
     remember(plan, port, null, message);
   }
+}
+
+/** Tests install an already-open listener so a later sync can close it. */
+export function adoptPhoneListenerForTests(server: http.Server, host: string): void {
+  globalForGateway.__wavesmithPhone = {
+    server,
+    port: phoneListenPort(),
+    host,
+    error: null,
+    mode: "tailscale",
+  };
 }
 
 function clientAddress(req: http.IncomingMessage): string {
@@ -481,8 +559,9 @@ function handleUpgrade(req: http.IncomingMessage, socket: import("node:stream").
   }
   const headers: http.OutgoingHttpHeaders = {};
   for (const [key, value] of Object.entries(req.headers)) {
-    if (key.startsWith("x-forwarded-") || key === GATEWAY_SECRET_HEADER) continue;
+    if (key.startsWith("x-forwarded-") || key === "x-real-ip" || key === GATEWAY_SECRET_HEADER) continue;
     if (key === "proxy-authorization" || key === "proxy-authenticate") continue;
+    if (key === "x-wavesmith-client" || key === INSTANCE_PROBE_HEADER) continue;
     headers[key] = value;
   }
   headers[GATEWAY_SECRET_HEADER] = gatewaySecret();

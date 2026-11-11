@@ -2,8 +2,12 @@
  * Phone access: the Mac is a loopback peer, a phone is the gateway secret,
  * and the door binds Tailscale unless this process explicitly opts into Wi-Fi.
  */
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it } from "vitest";
 import { POST as importPOST } from "@/app/api/library/import/route";
@@ -14,10 +18,10 @@ import { AceStepClient } from "@/lib/engine/acestep";
 import { getConnectionMode, setConnectionMode } from "@/lib/grok/mode";
 import { readGrokApiKey, saveGrokApiKey } from "@/lib/grok/secrets";
 import { authorizeWrite, classifyRequest, isJsonMediaType } from "@/lib/phone/access";
-import { beginPhoneProcess, confirmedTailscaleAddresses, isTailscaleIPv4, isTailscaleIPv6, lanDisplayAddresses, lanOptIn, localTailscaleAddresses, planPhoneBind, setLanOptIn, setTailscaleRunnerForTests } from "@/lib/phone/bind";
-import { DEVICE_COOKIE_MAX_AGE, deviceCookie } from "@/lib/phone/codes";
+import { beginPhoneProcess, confirmedTailscaleAddresses, isTailscaleIPv4, isTailscaleIPv6, lanDisplayAddresses, lanOptIn, localTailscaleAddresses, planPhoneBind, setInterfaceSourceForTests, setLanOptIn, setTailscaleRunnerForTests, type NamedInterface } from "@/lib/phone/bind";
+import { DEVICE_COOKIE_MAX_AGE, PHONE_COOKIE, deviceCookie } from "@/lib/phone/codes";
 import { devOriginAllowed } from "@/lib/phone/dev-origins";
-import { gatewayHostAllowed, phoneGatewayError, phoneGatewayListening, resetPairThrottle, startPhoneGateway, stopPhoneGateway, syncPhoneGateway } from "@/lib/phone/gateway";
+import { adoptPhoneListenerForTests, gatewayHostAllowed, phoneGatewayError, phoneGatewayListening, resetPairThrottle, setPhoneSyncObserverForTests, startPhoneGateway, stopPhoneGateway, syncPhoneGateway } from "@/lib/phone/gateway";
 import { GATEWAY_SECRET_HEADER, PEER_HEADER, VIA_PROXY_HEADER, WAVESMITH_REQUEST_HEADER } from "@/lib/phone/headers";
 import { gatewayStartAllowed } from "@/lib/phone/listen";
 import { assertLoopbackBaseUrl } from "@/lib/phone/loopback";
@@ -27,6 +31,7 @@ import { gatewaySecret } from "@/lib/phone/secret";
 import {
   currentInvite,
   deviceForToken,
+  ensureInvite,
   INVITE_TTL_MS,
   phoneAccessEnabled,
   redeemInvite,
@@ -41,6 +46,8 @@ afterEach(async () => {
   setLanOptIn(false);
   setPhoneAccessEnabled(false);
   setTailscaleRunnerForTests(null);
+  setInterfaceSourceForTests(null);
+  setPhoneSyncObserverForTests(null);
   resetPairThrottle();
   stopPhoneGateway();
   await Promise.all(
@@ -667,5 +674,136 @@ describe("Tailscale lookup", () => {
     expect(calls).toBe(4);
     await localTailscaleAddresses({ refresh: true });
     expect(calls).toBe(8);
+  });
+
+  it("fails closed when the CLI ignores SIGTERM", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-tailscale-"));
+    const bin = path.join(dir, "tailscale");
+    fs.writeFileSync(
+      bin,
+      `#!/usr/bin/env node
+process.on("SIGTERM", () => {});
+setInterval(() => {}, 1000);
+`,
+    );
+    fs.chmodSync(bin, 0o755);
+    const previous = process.env.PATH;
+    process.env.PATH = `${dir}${path.delimiter}${previous ?? ""}`;
+    setTailscaleRunnerForTests(null);
+    const started = Date.now();
+    try {
+      const ips = await localTailscaleAddresses({ refresh: true });
+      const elapsed = Date.now() - started;
+      expect(ips).toEqual([]);
+      expect(planPhoneBind({ enabled: true, lan: false, tailscale: ips }).listen).toBe(false);
+      expect(elapsed).toBeGreaterThanOrEqual(1_900);
+      expect(elapsed).toBeLessThan(4_500);
+    } finally {
+      process.env.PATH = previous;
+      spawnSync("pkill", ["-KILL", "-f", bin]);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 8_000);
+
+  it("drops a cached address when the interface is gone, without calling the CLI", async () => {
+    setPhoneAccessEnabled(true);
+    const up: NamedInterface[] = [{ name: "tailscale0", address: "100.64.1.2" }];
+    let interfaces = up;
+    setInterfaceSourceForTests(() => interfaces);
+    let mode: "up" | "hang" = "up";
+    setTailscaleRunnerForTests(async () => {
+      if (mode === "hang") return new Promise<string>(() => {});
+      return "100.64.1.2\n";
+    });
+    expect(await localTailscaleAddresses({ refresh: true })).toEqual(["100.64.1.2"]);
+
+    const door = http.createServer((_req, res) => res.end("ok"));
+    const port = await listen(door);
+    expect(port).toBeGreaterThan(0);
+    adoptPhoneListenerForTests(door, "100.64.1.2");
+    expect(phoneGatewayListening()).toBe(true);
+
+    interfaces = [];
+    mode = "hang";
+    const started = Date.now();
+    await syncPhoneGateway();
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(phoneGatewayListening()).toBe(false);
+    expect(phoneGatewayError()).toMatch(/Tailscale/);
+  });
+
+  it("discards an older sync that would reopen the door", async () => {
+    setPhoneAccessEnabled(true);
+    setInterfaceSourceForTests(() => [{ name: "utun4", address: "100.64.1.2" }]);
+    let waiting = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setTailscaleRunnerForTests(async () => {
+      waiting += 1;
+      if (waiting <= 4) {
+        await gate;
+        return "100.64.1.2\n";
+      }
+      return "";
+    });
+    const applied: boolean[] = [];
+    setPhoneSyncObserverForTests((plan) => applied.push(plan.listen));
+    const first = syncPhoneGateway();
+    const deadline = Date.now() + 1_000;
+    while (waiting < 4 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(waiting).toBe(4);
+    const second = syncPhoneGateway({ refreshTailscale: true });
+    release();
+    await first;
+    await second;
+    expect(applied).toEqual([false]);
+    expect(phoneGatewayListening()).toBe(false);
+  });
+
+  it("does not forward X-Real-IP on a WebSocket upgrade", async () => {
+    setPhoneAccessEnabled(true);
+    const invite = ensureInvite();
+    const redeemed = redeemInvite({
+      code: invite.code,
+      label: "iPhone",
+      address: "100.64.0.2",
+      userAgent: "iPhone",
+    });
+    expect(redeemed).not.toBeNull();
+    const seen: { realIp?: string; secret?: string } = {};
+    const upstream = http.createServer();
+    upstream.on("upgrade", (req, socket) => {
+      seen.realIp = req.headers["x-real-ip"] as string | undefined;
+      seen.secret = req.headers["x-wavesmith-gateway"] as string | undefined;
+      socket.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+      socket.end();
+    });
+    const upstreamPort = await listen(upstream);
+    const door = await startPhoneGateway({ host: "127.0.0.1", port: 0, upstreamPort });
+    const doorPort = (door.address() as AddressInfo).port;
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({
+        hostname: "127.0.0.1",
+        port: doorPort,
+        path: "/_next/webpack-hmr",
+        headers: {
+          connection: "Upgrade",
+          upgrade: "websocket",
+          host: `127.0.0.1:${doorPort}`,
+          "x-real-ip": "203.0.113.8",
+          cookie: `${PHONE_COOKIE}=${encodeURIComponent(redeemed!.token)}`,
+        },
+      });
+      req.on("upgrade", () => resolve());
+      req.on("error", reject);
+      req.end();
+    });
+    expect(seen.realIp).toBeUndefined();
+    expect(seen.secret).toBeTruthy();
+    door.close();
   });
 });
