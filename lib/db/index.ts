@@ -35,9 +35,39 @@ function createDb(): DB {
   sqlite.pragma("journal_mode = WAL"); // readers don't block the queue worker's writes
   sqlite.pragma("foreign_keys = ON"); // stems.song_id cascade relies on this
   const database = drizzle(sqlite, { schema });
-  // Idempotent: applies only migrations not yet recorded in __drizzle_migrations.
-  migrate(database, { migrationsFolder });
+  // Next's build collects pages in several workers. They must not apply one
+  // migration at the same time.
+  withMigrateLock(env.dbPath, () => {
+    migrate(database, { migrationsFolder });
+  });
   return database;
+}
+
+function withMigrateLock(dbPath: string, run: () => void): void {
+  const lockPath = `${dbPath}.migrate.lock`;
+  const started = Date.now();
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      try {
+        run();
+      } finally {
+        fs.closeSync(fd);
+        fs.rmSync(lockPath, { force: true });
+      }
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - fs.statSync(lockPath).mtimeMs > 30_000) fs.rmSync(lockPath, { force: true });
+      } catch {
+        // The other worker removed it.
+      }
+      if (Date.now() - started > 30_000) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
 }
 
 export const db: DB = globalForDb.__wavesmithDb ?? createDb();

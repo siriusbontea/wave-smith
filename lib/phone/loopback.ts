@@ -6,8 +6,18 @@
  * or a mis-set env could send prompts off this computer. Both must be loopback.
  */
 
+/** Strip brackets, a zone id, and an IPv4-mapped IPv6 prefix. */
+export function normalizeIp(value: string): string {
+  let host = value.trim().toLowerCase();
+  if (host.startsWith("[") && host.includes("]")) host = host.slice(1, host.indexOf("]"));
+  const zone = host.indexOf("%");
+  if (zone !== -1) host = host.slice(0, zone);
+  if (host.startsWith("::ffff:")) host = host.slice("::ffff:".length);
+  return host;
+}
+
 export function isLoopbackHost(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const host = normalizeIp(hostname);
   return host === "localhost" || host === "127.0.0.1" || host === "::1";
 }
 

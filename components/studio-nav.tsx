@@ -56,7 +56,7 @@ export function StudioNav() {
           })}
         </nav>
         <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
-          {health?.phone?.enabled ? (
+          {health?.phone?.listening ? (
             <Link
               href="/settings"
               className="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium"

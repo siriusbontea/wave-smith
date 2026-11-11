@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PhoneAccess } from "@/components/settings/phone-access";
-import { forge } from "@/lib/client/api";
+import { forge, withWavesmithHeaders } from "@/lib/client/api";
 import { useHeldSubmit } from "@/lib/client/use-held-submit";
 
 interface SettingsResponse {
@@ -54,11 +54,14 @@ async function fetchSettings(): Promise<SettingsResponse> {
 }
 
 async function patchSettings(body: Record<string, unknown>): Promise<void> {
-  const res = await fetch("/api/settings", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const res = await fetch(
+    "/api/settings",
+    withWavesmithHeaders({
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
   if (!res.ok) throw new Error("Failed to save settings");
 }
 

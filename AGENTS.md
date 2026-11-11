@@ -58,7 +58,7 @@ Browser → Wavesmith (Next.js @ :3000) → ACE-Step REST API (@ :8001)
 | Process | Port | Notes |
 |---------|------|-------|
 | **Wavesmith app** | 3000 | Next.js 16 App Router; route handlers *are* the API; bind `127.0.0.1` only |
-| **Phone gateway** | 8787 | Opt-in (`PHONE_PORT`). Binds `0.0.0.0` only while Settings → phone access is on. Proxies to the app after pairing. Never to 8001 or 11434. |
+| **Phone gateway** | 8787 | Opt-in (`PHONE_PORT`). Binds the Tailscale address only while Settings → phone access is on. Home Wi-Fi (`0.0.0.0`) is a second toggle and does not survive a restart. Proxies to the app after pairing. Never to 8001 or 11434. |
 | **ACE-Step 1.5** | 8001 | Cloned to `engine/ACE-Step-1.5` (gitignored), pin in `docs/ENGINE_NOTES.md`. REST only — never Gradio, never custom PyTorch. Loopback only. |
 | **Ollama** (optional) | 11434 | Lyrics LLM; degrades gracefully when absent. Loopback only. |
 
@@ -71,7 +71,7 @@ Browser → Wavesmith (Next.js @ :3000) → ACE-Step REST API (@ :8001)
 5. **Stems via Demucs** — `htdemucs` CLI, not engine Extract (turbo variant loaded; `base` needed for engine stems).
 6. **Lyrics passthrough** — no app-side censorship; user lyrics go to the engine unmodified.
 7. **Test seam** — `MOCK_ENGINE=1` → `MockEngineClient`; tests must never require GPU or ACE-Step running.
-8. **Phone access is a gateway** — the Next app, ACE-Step, and Ollama stay on loopback. `lib/phone/gateway.ts` may bind the LAN only while the setting is on, and only proxies to the app after pairing. Do not point `ENGINE_URL` or `LYRICS_LLM_URL` at a non-loopback host.
+8. **Phone access is a gateway** — the Next app, ACE-Step, and Ollama stay on loopback (`pnpm dev` / `pnpm start` include `--hostname 127.0.0.1`). The gateway binds the Tailscale address only while the setting is on, unless home Wi-Fi was explicitly enabled for this process. It proxies to the app after pairing. A request is the Mac only with a loopback peer and a loopback Host. Do not point `ENGINE_URL` or `LYRICS_LLM_URL` at a non-loopback host.
 
 ### Engine & lyrics seams
 

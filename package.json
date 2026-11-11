@@ -5,9 +5,9 @@
   "author": "Sirius T.Bontea <sirius.bontea@protonmail.com>",
   "license": "GPL-3.0-or-later",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start --hostname 127.0.0.1",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",

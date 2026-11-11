@@ -46,8 +46,12 @@ export function readCookie(header: string | undefined, name: string): string | u
   return undefined;
 }
 
-export function deviceCookie(token: string): string {
-  return `${PHONE_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`;
+/** 30 days. The gateway refreshes this while the phone is in use. */
+export const DEVICE_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
+
+export function deviceCookie(token: string, secure = false): string {
+  const secureFlag = secure ? "; Secure" : "";
+  return `${PHONE_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${DEVICE_COOKIE_MAX_AGE}${secureFlag}`;
 }
 
 export function deviceLabel(userAgent: string | undefined): string {

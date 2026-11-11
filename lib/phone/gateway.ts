@@ -1,39 +1,50 @@
 /**
- * lib/phone/gateway.ts — LAN door in front of the local app.
+ * lib/phone/gateway.ts — the phone door in front of the local app.
  *
- * The Next server, ACE-Step, and Ollama keep listening on 127.0.0.1. This
- * process opens 0.0.0.0 only while phone access is on, and only after a
- * one-time pairing code. It proxies to the app port and nowhere else, so a
- * phone cannot open the engine port even if it can reach this one.
+ * Next, ACE-Step, and Ollama stay on 127.0.0.1. This listener opens only while
+ * phone access is on, and only on the Tailscale address unless home Wi-Fi was
+ * turned on for this run. It proxies to the app after pairing and nowhere else.
  */
 import http from "node:http";
-import { assertLoopbackBaseUrl } from "@/lib/phone/loopback";
-import {
-  deviceCookie,
-  deviceLabel,
-  PHONE_COOKIE,
-  readCookie,
-} from "@/lib/phone/codes";
-import { PHONE_CLIENT_HEADER } from "@/lib/phone/client";
+import { GATEWAY_SECRET_HEADER, WAVESMITH_REQUEST_HEADER } from "@/lib/phone/headers";
+import { assertLoopbackBaseUrl, isLoopbackHost, normalizeIp } from "@/lib/phone/loopback";
+import { lanOptIn, localTailscaleAddresses, planPhoneBind, type BindPlan } from "@/lib/phone/bind";
+import { deviceCookie, deviceLabel, PHONE_COOKIE, readCookie } from "@/lib/phone/codes";
+import { detectListens, gatewayStartAllowed } from "@/lib/phone/listen";
+import { gatewaySecret, instanceMark } from "@/lib/phone/secret";
+import { env } from "@/lib/env";
 import {
   deviceForToken,
   phoneAccessEnabled,
   redeemInvite,
   touchDevice,
 } from "@/lib/phone/store";
-import { env } from "@/lib/env";
 
 const globalForGateway = globalThis as unknown as {
   __wavesmithPhone?: {
     server: http.Server | null;
     port: number;
+    host: string | null;
     error: string | null;
+    mode: BindPlan["mode"];
   };
 };
 
 const failures = new Map<string, { count: number; resetAt: number }>();
-const FAIL_LIMIT = 8;
-const FAIL_WINDOW_MS = 10 * 60_000;
+const FAIL_WINDOW_MS = 60_000;
+
+const HOP_BY_HOP = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailers",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+const PUBLIC_PATHS = new Set(["/manifest.webmanifest", "/icon", "/apple-icon", "/favicon.ico"]);
 
 export function phoneListenPort(): number {
   const raw = process.env.PHONE_PORT || "8787";
@@ -50,17 +61,20 @@ export function appListenPort(): number {
   return Number.isInteger(port) && port > 0 ? port : 3000;
 }
 
-/** Production bind. Tests pass 127.0.0.1 explicitly so they don't need every interface. */
-export function phoneBindHost(): "0.0.0.0" {
-  return "0.0.0.0";
-}
-
 export function phoneGatewayError(): string | null {
   return globalForGateway.__wavesmithPhone?.error ?? null;
 }
 
 export function phoneGatewayListening(): boolean {
   return globalForGateway.__wavesmithPhone?.server?.listening === true;
+}
+
+export function phoneGatewayHost(): string | null {
+  return globalForGateway.__wavesmithPhone?.host ?? null;
+}
+
+export function phoneGatewayMode(): BindPlan["mode"] {
+  return globalForGateway.__wavesmithPhone?.mode ?? "off";
 }
 
 export function stopPhoneGateway(): void {
@@ -76,7 +90,6 @@ export interface GatewayOptions {
   upstreamPort: number;
 }
 
-/** Start a gateway. Resolves with the server, which the caller must close. */
 const RESERVED_PORTS = new Set([8001, 11434]);
 
 export function startPhoneGateway(opts: GatewayOptions): Promise<http.Server> {
@@ -90,105 +103,262 @@ export function startPhoneGateway(opts: GatewayOptions): Promise<http.Server> {
     throw new Error("Phone access cannot use the same port as Wavesmith.");
   }
   const server = http.createServer((req, res) => {
-    handleGatewayRequest(req, res, opts.upstreamPort);
+    void handleGatewayRequest(req, res, opts);
+  });
+  server.on("upgrade", (req, socket) => {
+    handleUpgrade(req, socket, opts);
   });
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
+    const fail = (err: Error) => {
+      server.close();
+      reject(err);
+    };
+    server.once("error", fail);
     server.listen(opts.port, opts.host, () => {
-      server.off("error", reject);
+      server.off("error", fail);
       resolve(server);
     });
   });
 }
 
-/** Open or close the LAN listener to match the saved setting. */
+async function verifyUpstream(port: number): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const mark = instanceMark();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      headers: {
+        [GATEWAY_SECRET_HEADER]: gatewaySecret(),
+        host: `127.0.0.1:${port}`,
+      },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.headers.get("x-wavesmith-instance") !== mark) {
+      return {
+        ok: false,
+        reason: `Port ${port} is not this Wavesmith, so the phone door stayed closed.`,
+      };
+    }
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      reason: `Couldn't reach Wavesmith on 127.0.0.1:${port}, so the phone door stayed closed.`,
+    };
+  }
+}
+
+function remember(plan: BindPlan, port: number, server: http.Server | null, error: string | null): void {
+  globalForGateway.__wavesmithPhone = {
+    server,
+    port,
+    host: plan.host,
+    error,
+    mode: plan.mode,
+  };
+}
+
+/** Open or close the listener so it matches Tailscale (or this run's Wi-Fi choice). */
 export async function syncPhoneGateway(): Promise<void> {
-  if (!phoneAccessEnabled()) {
+  const plan = planPhoneBind({
+    enabled: phoneAccessEnabled(),
+    lan: lanOptIn(),
+    tailscale: localTailscaleAddresses(),
+  });
+  const port = phoneListenPort();
+  if (!plan.listen || !plan.host) {
     stopPhoneGateway();
+    remember(plan, port, null, plan.reason);
     return;
   }
-  if (phoneGatewayListening()) return;
-  const port = phoneListenPort();
+  const current = globalForGateway.__wavesmithPhone;
+  if (current?.server?.listening && current.host === plan.host) return;
+  stopPhoneGateway();
+  const upstreamPort = appListenPort();
+  const upstream = await verifyUpstream(upstreamPort);
+  if (!upstream.ok) {
+    remember(plan, port, null, upstream.reason);
+    return;
+  }
+  const bound = gatewayStartAllowed(detectListens(), upstreamPort);
+  if (!bound.ok) {
+    console.error(`[phone] ${bound.reason}`);
+    remember(plan, port, null, bound.reason);
+    return;
+  }
   try {
-    const server = await startPhoneGateway({
-      host: phoneBindHost(),
-      port,
-      upstreamPort: appListenPort(),
-    });
-    globalForGateway.__wavesmithPhone = { server, port, error: null };
+    const server = await startPhoneGateway({ host: plan.host, port, upstreamPort });
+    remember(plan, port, server, null);
   } catch (err) {
     const raw = err instanceof Error ? err.message : "Could not open phone access.";
     const message = raw.includes("EADDRINUSE")
       ? `Port ${port} is already in use. Close the other program, or set PHONE_PORT.`
       : raw;
-    globalForGateway.__wavesmithPhone = { server: null, port, error: message };
+    remember(plan, port, null, message);
   }
 }
 
 function clientAddress(req: http.IncomingMessage): string {
-  return req.socket.remoteAddress ?? "unknown";
+  return normalizeIp(req.socket.remoteAddress ?? "unknown");
 }
 
-function tooManyFailures(address: string): boolean {
-  const now = Date.now();
-  const row = failures.get(address);
-  if (!row || now > row.resetAt) return false;
-  return row.count >= FAIL_LIMIT;
+function headerHost(req: http.IncomingMessage): string {
+  const raw = req.headers.host ?? "";
+  if (raw.startsWith("[")) {
+    const end = raw.indexOf("]");
+    return end === -1 ? raw : raw.slice(1, end);
+  }
+  return raw.split(":")[0] ?? "";
+}
+
+export function gatewayHostAllowed(req: http.IncomingMessage, bindHost: string): boolean {
+  const host = normalizeIp(headerHost(req));
+  const local = normalizeIp(req.socket.localAddress ?? "");
+  if (!host) return false;
+  if (isLoopbackHost(host) && (isLoopbackHost(local) || local === "")) return true;
+  if (host === local) return true;
+  if (bindHost !== "0.0.0.0" && host === normalizeIp(bindHost)) return true;
+  return false;
+}
+
+function originAllowed(req: http.IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin || Array.isArray(origin)) return false;
+  try {
+    return normalizeIp(new URL(origin).hostname) === normalizeIp(headerHost(req));
+  } catch {
+    return false;
+  }
+}
+
+function pruneFailures(now: number): void {
+  for (const [key, row] of failures) {
+    if (now > row.resetAt) failures.delete(key);
+  }
+  while (failures.size > 200) {
+    const oldest = failures.keys().next().value;
+    if (!oldest) break;
+    failures.delete(oldest);
+  }
 }
 
 function noteFailure(address: string): void {
   const now = Date.now();
+  pruneFailures(now);
   const row = failures.get(address);
   if (!row || now > row.resetAt) {
     failures.set(address, { count: 1, resetAt: now + FAIL_WINDOW_MS });
     return;
   }
   row.count += 1;
+  row.resetAt = now + FAIL_WINDOW_MS;
 }
 
-function handleGatewayRequest(req: http.IncomingMessage, res: http.ServerResponse, upstreamPort: number): void {
+function wrongCodeDelay(address: string): number {
+  const row = failures.get(address);
+  if (!row || Date.now() > row.resetAt) return 0;
+  return Math.min(2000, 150 * 2 ** Math.min(row.count, 4));
+}
+
+async function handleGatewayRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  opts: GatewayOptions,
+): Promise<void> {
+  if (!gatewayHostAllowed(req, opts.host)) {
+    sendText(res, 403, "This address is not the phone door.");
+    return;
+  }
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (url.pathname === "/pair") {
-    void handlePair(req, res, url);
+    await handlePair(req, res, url);
+    return;
+  }
+  if (PUBLIC_PATHS.has(url.pathname)) {
+    proxyToApp(req, res, opts.upstreamPort, null);
     return;
   }
   const token = readCookie(req.headers.cookie, PHONE_COOKIE);
   if (!deviceForToken(token)) {
-    if (req.method === "GET") {
-      sendHtml(res, 200, pairPage(null));
+    if (url.pathname.startsWith("/api/")) {
+      sendJson(res, 401, { error: "This phone is not paired. Scan the code on the computer." });
+      return;
+    }
+    if (req.method === "GET" || req.method === "HEAD") {
+      sendHtml(res, 200, pairPage({ message: null, code: "" }));
       return;
     }
     sendJson(res, 401, { error: "This phone is not paired. Scan the code on the computer." });
     return;
   }
-  touchDevice(token);
-  proxyToApp(req, res, upstreamPort);
+  const method = (req.method ?? "GET").toUpperCase();
+  if (url.pathname.startsWith("/api/") && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    if (!originAllowed(req)) {
+      sendJson(res, 403, { error: "Use the Wavesmith page on this phone." });
+      return;
+    }
+    if (req.headers[WAVESMITH_REQUEST_HEADER] !== "1") {
+      sendJson(res, 403, { error: "Use the Wavesmith page on this phone." });
+      return;
+    }
+    if (method !== "DELETE") {
+      const contentType = String(req.headers["content-type"] ?? "");
+      if (!contentType.toLowerCase().startsWith("application/json")) {
+        sendJson(res, 403, { error: "Use the Wavesmith page on this phone." });
+        return;
+      }
+    }
+  }
+  const refresh = touchDevice(token, clientAddress(req));
+  const secure = req.headers["x-forwarded-proto"] === "https";
+  proxyToApp(req, res, opts.upstreamPort, refresh && token ? deviceCookie(token, secure) : null);
 }
 
 async function handlePair(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
   const address = clientAddress(req);
-  if (tooManyFailures(address)) {
-    sendHtml(res, 429, pairPage("Too many tries. Wait a few minutes and scan a new code."));
+  if ((req.method ?? "GET").toUpperCase() !== "POST") {
+    sendHtml(res, 200, pairPage({ message: null, code: url.searchParams.get("code") ?? "" }));
     return;
   }
-  let code = url.searchParams.get("code") ?? "";
-  if (req.method === "POST") code = (await readFormCode(req)) ?? code;
+  if (!originAllowed(req)) {
+    sendHtml(res, 403, pairPage({ message: "Open this page from the address on the computer.", code: "" }));
+    return;
+  }
+  const code = (await readFormCode(req)) ?? "";
   if (!code.trim()) {
-    sendHtml(res, 200, pairPage(null));
+    sendHtml(res, 200, pairPage({ message: null, code: "" }));
     return;
   }
-  const redeemed = redeemInvite(code, deviceLabel(req.headers["user-agent"]));
+  const redeemed = redeemInvite({
+    code,
+    label: deviceLabel(headerString(req.headers["user-agent"])),
+    address,
+    userAgent: headerString(req.headers["user-agent"]) ?? "",
+  });
   if (!redeemed) {
     noteFailure(address);
-    sendHtml(res, 403, pairPage("That code doesn't match. On the computer, check the code and try again."));
+    const wait = wrongCodeDelay(address);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    sendHtml(
+      res,
+      403,
+      pairPage({
+        message: "That code doesn't match. Check the computer and try again in a moment.",
+        code,
+      }),
+    );
     return;
   }
+  failures.delete(address);
+  const secure = req.headers["x-forwarded-proto"] === "https";
   res.writeHead(302, {
     Location: "/",
-    "Set-Cookie": deviceCookie(redeemed.token),
+    "Set-Cookie": deviceCookie(redeemed.token, secure),
     "Cache-Control": "no-store",
   });
   res.end();
+}
+
+function headerString(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function readFormCode(req: http.IncomingMessage): Promise<string | null> {
@@ -212,10 +382,18 @@ function readFormCode(req: http.IncomingMessage): Promise<string | null> {
   });
 }
 
-function proxyToApp(req: http.IncomingMessage, res: http.ServerResponse, upstreamPort: number): void {
-  const headers: http.OutgoingHttpHeaders = { ...req.headers };
-  delete headers.connection;
-  delete headers[PHONE_CLIENT_HEADER];
+function proxyToApp(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  upstreamPort: number,
+  refreshCookie: string | null,
+): void {
+  const headers: http.OutgoingHttpHeaders = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (HOP_BY_HOP.has(key) || key.startsWith("x-forwarded-")) continue;
+    if (key === GATEWAY_SECRET_HEADER || key === "x-wavesmith-client") continue;
+    headers[key] = value;
+  }
   if (typeof headers.cookie === "string") {
     headers.cookie = headers.cookie
       .split(";")
@@ -223,8 +401,12 @@ function proxyToApp(req: http.IncomingMessage, res: http.ServerResponse, upstrea
       .filter((part) => part && !part.startsWith(`${PHONE_COOKIE}=`))
       .join("; ");
   }
-  headers[PHONE_CLIENT_HEADER] = "phone";
+  headers[GATEWAY_SECRET_HEADER] = gatewaySecret();
+  headers["x-wavesmith-client"] = "phone";
   headers.host = `127.0.0.1:${upstreamPort}`;
+  headers["x-forwarded-for"] = clientAddress(req);
+  headers["x-forwarded-host"] = headerHost(req);
+  headers["x-forwarded-proto"] = req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
   const upstream = http.request(
     {
       hostname: "127.0.0.1",
@@ -237,6 +419,12 @@ function proxyToApp(req: http.IncomingMessage, res: http.ServerResponse, upstrea
       const out: http.OutgoingHttpHeaders = { ...up.headers };
       delete out["transfer-encoding"];
       delete out.connection;
+      if (refreshCookie) {
+        const existing = out["set-cookie"];
+        if (!existing) out["set-cookie"] = refreshCookie;
+        else if (Array.isArray(existing)) out["set-cookie"] = [...existing, refreshCookie];
+        else out["set-cookie"] = [existing, refreshCookie];
+      }
       res.writeHead(up.statusCode ?? 502, out);
       up.pipe(res);
     },
@@ -249,6 +437,47 @@ function proxyToApp(req: http.IncomingMessage, res: http.ServerResponse, upstrea
     sendText(res, 502, "Wavesmith isn't answering on this computer.");
   });
   req.pipe(upstream);
+}
+
+function handleUpgrade(req: http.IncomingMessage, socket: import("node:stream").Duplex, opts: GatewayOptions): void {
+  if (!gatewayHostAllowed(req, opts.host)) {
+    socket.destroy();
+    return;
+  }
+  const token = readCookie(req.headers.cookie, PHONE_COOKIE);
+  if (!deviceForToken(token)) {
+    socket.destroy();
+    return;
+  }
+  const headers: http.OutgoingHttpHeaders = {};
+  for (const [key, value] of Object.entries(req.headers)) {
+    if (key.startsWith("x-forwarded-") || key === GATEWAY_SECRET_HEADER) continue;
+    if (key === "proxy-authorization" || key === "proxy-authenticate") continue;
+    headers[key] = value;
+  }
+  headers[GATEWAY_SECRET_HEADER] = gatewaySecret();
+  headers.host = `127.0.0.1:${opts.upstreamPort}`;
+  const upstream = http.request({
+    hostname: "127.0.0.1",
+    port: opts.upstreamPort,
+    method: "GET",
+    path: req.url,
+    headers,
+  });
+  upstream.on("upgrade", (up, upSocket, head) => {
+    const lines = [`HTTP/1.1 ${up.statusCode ?? 101} ${up.statusMessage ?? "Switching Protocols"}`];
+    for (const [key, value] of Object.entries(up.headers)) {
+      if (value == null) continue;
+      const list = Array.isArray(value) ? value : [value];
+      for (const item of list) lines.push(`${key}: ${item}`);
+    }
+    socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+    if (head.length) socket.write(head);
+    upSocket.pipe(socket);
+    socket.pipe(upSocket);
+  });
+  upstream.on("error", () => socket.destroy());
+  upstream.end();
 }
 
 function sendHtml(res: http.ServerResponse, status: number, html: string): void {
@@ -268,7 +497,7 @@ function sendJson(res: http.ServerResponse, status: number, body: unknown): void
 }
 
 function sendText(res: http.ServerResponse, status: number, body: string): void {
-  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
+  res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
   res.end(body);
 }
 
@@ -280,8 +509,9 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-export function pairPage(message: string | null): string {
-  const note = message ? `<p class="warn">${escapeHtml(message)}</p>` : "";
+export function pairPage(input: { message: string | null; code: string }): string {
+  const note = input.message ? `<p class="warn" role="alert">${escapeHtml(input.message)}</p>` : "";
+  const value = escapeHtml(input.code);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -302,11 +532,11 @@ export function pairPage(message: string | null): string {
 <body>
   <main>
     <h1>Pair this phone</h1>
-    <p>Wavesmith is running on a computer on this Wi-Fi. Ask the person there to show you the pairing code, then type it here.</p>
+    <p>Wavesmith is running on the computer. Ask the person there for the pairing code, or scan the QR code with your camera, then tap Pair.</p>
     ${note}
     <form method="post" action="/pair">
       <label>Pairing code
-        <input name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text" required>
+        <input name="code" value="${value}" maxlength="9" placeholder="ABCD-EFGH" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text" required>
       </label>
       <button type="submit">Pair</button>
     </form>

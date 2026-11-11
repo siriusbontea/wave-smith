@@ -36,6 +36,13 @@
       "when": 1782000000000,
       "tag": "0004_phone_devices",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1782100000000,
+      "tag": "0005_phone_device_details",
+      "breakpoints": true
     }
   ]
 }

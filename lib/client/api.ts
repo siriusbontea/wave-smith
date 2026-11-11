@@ -59,7 +59,7 @@ export interface HealthView {
     ready: boolean;
     hint: string;
   };
-  phone?: { enabled: boolean };
+  phone?: { enabled: boolean; listening?: boolean };
 }
 
 export interface EnhanceView {
@@ -136,10 +136,20 @@ export function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+/** State-changing calls set a header a foreign page cannot add. */
+export function withWavesmithHeaders(init?: RequestInit): RequestInit {
+  const headers = new Headers(init?.headers);
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+    headers.set("x-wavesmith-request", "1");
+  }
+  return { ...init, headers };
+}
+
 /** Map a dead connection to a sentence a kid can use. */
 async function request(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(input, init);
+    return await fetch(input, withWavesmithHeaders(init));
   } catch (err) {
     if (isAbortError(err)) throw err;
     throw new Error("Couldn't reach Wavesmith. Is it still running?");

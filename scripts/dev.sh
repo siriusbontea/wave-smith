@@ -2,7 +2,7 @@
 # scripts/dev.sh — start the engine + Next.js dev server concurrently with
 # prefixed logs. Ctrl-C (or SIGTERM from a supervisor) stops both, including
 # grandchildren. The app and the engine bind 127.0.0.1 only. Phone access, if
-# you turn it on in Settings, is a separate gateway inside the app (see
+# you turn it on in Settings, listens on the Tailscale address (see
 # docs/PHONE.md). Do not point the engine at a LAN address.
 #
 # The engine is launched directly via `uv run acestep-api` — NOT via the

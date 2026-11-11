@@ -173,15 +173,19 @@ First engine warm-up after boot takes about **45 seconds** with weights already 
 
 ### Use it from your phone
 
-The computer still does the generating. A phone on the same Wi-Fi can drive Wavesmith after you pair it. This is off until you turn it on.
+The computer still makes the music. Tailscale is how a phone opens Wavesmith. It is off until you turn it on.
 
-1. On the computer, open **Settings** and choose **Turn on** under **Use from a phone**.
-2. On the phone, scan the code with the camera (or open the address and type the code).
-3. Create, listen, edit, and download from the phone. If it sleeps, the queue keeps going on the computer.
+1. Install Tailscale on the Mac and on the iPhone, and sign in to the same account.
+2. On the Mac, open **Settings** and choose **Turn on** under **Use from a phone**.
+3. On the iPhone, scan the code, then tap **Pair**.
 4. In Safari: Share → **Add to Home Screen**.
-5. **Turn off** or **Remove** a phone from Settings on the computer. The header shows **Phone on** while it is listening.
+5. **Turn off** closes the door and forgets every paired phone. **Remove** forgets one phone and leaves the door open.
 
-![Phone access on, with a pairing code](docs/screenshots/phone-pair-mac.png)
+The code lasts 10 minutes. The header shows **Phone on** only while the door is actually open. If Tailscale is not signed in, Settings says so and nothing listens. If the phone sleeps, the queue keeps going on the computer.
+
+Home Wi-Fi is an extra switch in Settings. It is plain HTTP, and it does not come back after a restart. Do not put this on the public internet, and do not use Tailscale Funnel. Steps and the exact rules are in [docs/PHONE.md](docs/PHONE.md).
+
+![Settings when Tailscale is not running: the phone door stays closed](docs/screenshots/phone-pair-mac.png)
 
 <table>
   <tr>
@@ -193,8 +197,6 @@ The computer still does the generating. A phone on the same Wi-Fi can drive Wave
     <td>After pairing</td>
   </tr>
 </table>
-
-The music engine never opens onto the Wi-Fi. Do not forward the port to the internet. Away from home, use Tailscale instead — steps and the security tradeoff are in [docs/PHONE.md](docs/PHONE.md).
 
 ### Languages & lyrics
 

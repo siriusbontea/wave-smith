@@ -93,6 +93,8 @@ export const phoneDevices = sqliteTable("phone_devices", {
   tokenHash: text("token_hash").notNull(),
   createdAt: integer("created_at").notNull(),
   lastSeenAt: integer("last_seen_at"),
+  lastAddress: text("last_address"),
+  userAgent: text("user_agent"),
 });
 
 /** One unused pairing code. Shown on the Mac until a phone redeems it. */

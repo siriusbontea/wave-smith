@@ -17,7 +17,7 @@ import { listSettings, setSetting } from "@/lib/settings/queries";
 import { getEngineClient } from "@/lib/engine";
 import { BASE_DIT_MODEL, baseModelOnDisk } from "@/lib/engine/base-model";
 import { getLyricsClient } from "@/lib/lyrics";
-import { isPhoneClient } from "@/lib/phone/client";
+import { authorizeWrite, classifyRequest, rejectedResponse } from "@/lib/phone/access";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,10 @@ function dirSizeBytes(dir: string): number {
 }
 
 export async function GET(req: Request) {
-  const viaPhone = isPhoneClient(req);
+  const kind = classifyRequest(req);
+  const denied = rejectedResponse(kind);
+  if (denied) return denied;
+  const viaPhone = kind === "phone";
   const engine = await getEngineClient()
     .health()
     .catch(() => ({
@@ -102,9 +105,12 @@ export async function PATCH(req: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", issues: parsed.error.issues }, { status: 400 });
   }
-  if (isPhoneClient(req) && (parsed.data.xaiApiKey !== undefined || parsed.data.clearXaiApiKey)) {
+  const kind = classifyRequest(req);
+  const write = authorizeWrite(req, kind);
+  if (!write.ok) return NextResponse.json({ error: write.error }, { status: write.status });
+  if (kind === "phone") {
     return NextResponse.json(
-      { error: "The API key stays on this computer. Add it there, not on the phone." },
+      { error: "Change this on the computer. A phone cannot switch on Grok or edit these settings." },
       { status: 403 },
     );
   }
