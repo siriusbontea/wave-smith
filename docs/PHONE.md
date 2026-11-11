@@ -32,7 +32,7 @@ Each phone shows its name, when it paired, when it was last seen, and its addres
 
 - Reach the music engine, Ollama, or anything except through Wavesmith.
 - See or change the xAI key.
-- Turn on Grok, change the lyrics setting, change the theme stored on the computer, or import a library file. Do those on the computer.
+- Turn on Grok, change the lyrics setting, change the theme stored on the computer, run test generation, or import a library file. Do those on the computer.
 
 The phone can still create songs, play them, edit them, and download them.
 
@@ -56,6 +56,6 @@ A wrong code waits a short moment, then you can try again. The wait does not kee
 
 The Wavesmith app stays on `127.0.0.1:3000`. The music engine stays on `127.0.0.1:8001`. Ollama, if you use it, stays on `127.0.0.1:11434`. None of those open onto the network. `pnpm dev` and `pnpm start` bind the app to `127.0.0.1`, same as `./scripts/dev.sh` and `./scripts/start.sh`.
 
-While phone access is on, the phone door uses port **8787** (`PHONE_PORT`). It listens only on an address Tailscale reports (`tailscale ip -4` and `-6`, including the Mac app at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`) or on an interface named `tailscale0`. That address is often `100.x.y.z`, or an IPv6 address starting with `fd7a:115c:a1e0:`. A `100.x` address from the home network or another VPN is not enough, and the door stays closed.
+While phone access is on, the phone door uses port **8787** (`PHONE_PORT`). It listens only on an address Tailscale reports (`tailscale ip -4` and `-6`, including the Mac app at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`) or on an interface named `tailscale0`. That address is often `100.x.y.z`, or an IPv6 address starting with `fd7a:115c:a1e0:`. A `100.x` address from the home network or another VPN is not enough, and the door stays closed. The lookup is asynchronous, times out after 2 seconds, and is cached for 30 seconds. **Check again** runs it immediately. A timeout leaves the door closed.
 
 Do not put Tailscale Serve or Funnel in front of port 3000 or port 8787. Serve cannot reach a door that is not on `127.0.0.1`, and a `*.ts.net` Host is refused. Use the `100.x` address Settings shows.

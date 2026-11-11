@@ -14,11 +14,11 @@ import { AceStepClient } from "@/lib/engine/acestep";
 import { getConnectionMode, setConnectionMode } from "@/lib/grok/mode";
 import { readGrokApiKey, saveGrokApiKey } from "@/lib/grok/secrets";
 import { authorizeWrite, classifyRequest, isJsonMediaType } from "@/lib/phone/access";
-import { beginPhoneProcess, confirmedTailscaleAddresses, isTailscaleIPv4, isTailscaleIPv6, lanDisplayAddresses, lanOptIn, planPhoneBind, setLanOptIn } from "@/lib/phone/bind";
+import { beginPhoneProcess, confirmedTailscaleAddresses, isTailscaleIPv4, isTailscaleIPv6, lanDisplayAddresses, lanOptIn, localTailscaleAddresses, planPhoneBind, setLanOptIn, setTailscaleRunnerForTests } from "@/lib/phone/bind";
 import { DEVICE_COOKIE_MAX_AGE, deviceCookie } from "@/lib/phone/codes";
 import { devOriginAllowed } from "@/lib/phone/dev-origins";
 import { gatewayHostAllowed, phoneGatewayError, phoneGatewayListening, resetPairThrottle, startPhoneGateway, stopPhoneGateway, syncPhoneGateway } from "@/lib/phone/gateway";
-import { GATEWAY_SECRET_HEADER, PEER_HEADER, WAVESMITH_REQUEST_HEADER } from "@/lib/phone/headers";
+import { GATEWAY_SECRET_HEADER, PEER_HEADER, VIA_PROXY_HEADER, WAVESMITH_REQUEST_HEADER } from "@/lib/phone/headers";
 import { gatewayStartAllowed } from "@/lib/phone/listen";
 import { assertLoopbackBaseUrl } from "@/lib/phone/loopback";
 import { mintId } from "@/lib/client/intent";
@@ -40,6 +40,7 @@ const servers: http.Server[] = [];
 afterEach(async () => {
   setLanOptIn(false);
   setPhoneAccessEnabled(false);
+  setTailscaleRunnerForTests(null);
   resetPairThrottle();
   stopPhoneGateway();
   await Promise.all(
@@ -594,5 +595,77 @@ describe("dev origins and cookies", () => {
     stampPeer(twice);
     expect(twice.headers["x-wavesmith-via-proxy"]).toBe("1");
     expect(twice.headers["x-forwarded-for"]).toBe("127.0.0.1");
+  });
+
+  it("treats X-Real-IP without X-Forwarded-For as a proxy and refuses the Mac", () => {
+    const raw = {
+      headers: { "x-real-ip": "203.0.113.8" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as unknown as http.IncomingMessage;
+    stampPeer(raw);
+    expect(raw.headers["x-real-ip"]).toBeUndefined();
+    expect(raw.headers[VIA_PROXY_HEADER]).toBe("1");
+    expect(raw.headers["x-forwarded-for"]).toBe("127.0.0.1");
+
+    const stamped = new Request("http://127.0.0.1:3000/api/phone", {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:3000",
+        origin: "http://127.0.0.1:3000",
+        "content-type": "application/json",
+        [WAVESMITH_REQUEST_HEADER]: "1",
+        [PEER_HEADER]: String(raw.headers["x-wavesmith-peer"]),
+        [VIA_PROXY_HEADER]: String(raw.headers[VIA_PROXY_HEADER]),
+      },
+      body: JSON.stringify({ action: "enable" }),
+    });
+    expect(classifyRequest(stamped)).toBe("rejected");
+    const write = authorizeWrite(stamped, classifyRequest(stamped));
+    expect(write.ok).toBe(false);
+    if (!write.ok) expect(write.status).toBe(403);
+
+    const same = {
+      headers: { "x-real-ip": "127.0.0.1" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as unknown as http.IncomingMessage;
+    stampPeer(same);
+    expect(same.headers[VIA_PROXY_HEADER]).toBeUndefined();
+  });
+});
+
+describe("Tailscale lookup", () => {
+  it("does not block the event loop, and a timeout leaves the door closed", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setTailscaleRunnerForTests(async () => {
+      await gate;
+      throw new Error("timeout");
+    });
+    const pending = localTailscaleAddresses({ refresh: true });
+    let ticked = false;
+    setTimeout(() => {
+      ticked = true;
+    }, 20);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(ticked).toBe(true);
+    release();
+    const ips = await pending;
+    expect(ips).toEqual([]);
+    expect(planPhoneBind({ enabled: true, lan: false, tailscale: ips }).listen).toBe(false);
+  });
+
+  it("caches the CLI result and runs it again when asked", async () => {
+    let calls = 0;
+    setTailscaleRunnerForTests(async () => {
+      calls += 1;
+      return "";
+    });
+    await localTailscaleAddresses({ refresh: true });
+    await localTailscaleAddresses();
+    expect(calls).toBe(4);
+    await localTailscaleAddresses({ refresh: true });
+    expect(calls).toBe(8);
   });
 });

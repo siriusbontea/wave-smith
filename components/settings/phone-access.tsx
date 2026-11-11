@@ -65,6 +65,17 @@ function when(ms: number | null): string {
   });
 }
 
+function recheckNote(status: PhoneStatus): string {
+  if (!status.listening) return "Checked — no change, Tailscale still not found";
+  const raw = status.urls[0];
+  if (!raw) return "Still connected";
+  try {
+    return `Still connected at ${new URL(raw).hostname}`;
+  } catch {
+    return "Still connected";
+  }
+}
+
 function CodeClock({ expiresAt }: { expiresAt: number }) {
   const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
@@ -107,12 +118,14 @@ export function PhoneAccess() {
     seen.current = ids;
   }, [data]);
 
+  const [checkNote, setCheckNote] = useState<string | null>(null);
   const mutation = useMutation({
     mutationFn: postPhone,
-    onSuccess: (next) => {
+    onSuccess: (next, variables) => {
       queryClient.setQueryData(["phone"], next);
       void queryClient.invalidateQueries({ queryKey: ["health"] });
       setRename(null);
+      if (variables.action !== "recheck") setCheckNote(null);
     },
     onError: (err) => toast.error("Phone access", { description: err.message }),
   });
@@ -139,6 +152,7 @@ export function PhoneAccess() {
   }
 
   const on = data.enabled && data.listening;
+  const checking = mutation.isPending && mutation.variables?.action === "recheck";
   return (
     <section className="rounded-xl border bg-card p-4" data-testid="phone-access">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -175,17 +189,39 @@ export function PhoneAccess() {
         </p>
       ) : null}
       {data.enabled && !data.listening ? (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="mt-3"
-          data-testid="phone-recheck"
-          disabled={mutation.isPending}
-          onClick={() => mutation.mutate({ action: "recheck" })}
-        >
-          Check again
-        </Button>
+        <div className="mt-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="phone-recheck"
+            aria-busy={checking}
+            disabled={mutation.isPending}
+            onClick={() =>
+              mutation.mutate(
+                { action: "recheck" },
+                {
+                  onSuccess: (next) => {
+                    const note = recheckNote(next);
+                    setCheckNote(note);
+                    toast(note);
+                  },
+                },
+              )
+            }
+          >
+            {checking ? "Checking…" : "Check again"}
+          </Button>
+          {checking ? (
+            <p className="mt-2 text-sm text-muted-foreground" role="status" data-testid="phone-recheck-status">
+              Checking…
+            </p>
+          ) : checkNote ? (
+            <p className="mt-2 text-sm" role="status" data-testid="phone-recheck-status">
+              {checkNote}
+            </p>
+          ) : null}
+        </div>
       ) : null}
       {on && data.invite ? (
         <div className="mt-4">

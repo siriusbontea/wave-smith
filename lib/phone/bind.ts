@@ -5,7 +5,7 @@
  * choice for this run of the app. A restart clears that choice so "on" does
  * not follow the laptop onto a café network.
  */
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import os from "node:os";
 import { isLoopbackHost, normalizeIp } from "@/lib/phone/loopback";
 
@@ -93,23 +93,52 @@ function namedInterfaces(): NamedInterface[] {
   return found;
 }
 
-function tailscaleCommandAddresses(): string[] {
-  const found: string[] = [];
-  for (const bin of TAILSCALE_BINS) {
-    for (const flag of ["-4", "-6"]) {
-      try {
-        const out = execFileSync(bin, ["ip", flag], {
-          timeout: 1500,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-        });
-        found.push(...out.split(/\s+/).filter(Boolean));
-      } catch {
-        // This binary is missing or Tailscale is signed out. Try the next one.
-      }
-    }
-  }
-  return found;
+const TAILSCALE_TIMEOUT_MS = 2_000;
+const TAILSCALE_CACHE_MS = 30_000;
+
+type TailscaleFlag = "-4" | "-6";
+type TailscaleRunner = (bin: string, flag: TailscaleFlag) => Promise<string>;
+
+function defaultTailscaleRunner(bin: string, flag: TailscaleFlag): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      bin,
+      ["ip", flag],
+      { timeout: TAILSCALE_TIMEOUT_MS, encoding: "utf8" },
+      (err, stdout) => {
+        if (err || typeof stdout !== "string") resolve("");
+        else resolve(stdout);
+      },
+    );
+  });
+}
+
+let tailscaleRunner: TailscaleRunner = defaultTailscaleRunner;
+let tailscaleCache: { at: number; ips: string[] } | null = null;
+let tailscaleInflight: Promise<string[]> | null = null;
+
+/** Tests replace the CLI. Production keeps execFile, which does not block the event loop. */
+export function setTailscaleRunnerForTests(next: TailscaleRunner | null): void {
+  tailscaleRunner = next ?? defaultTailscaleRunner;
+  tailscaleCache = null;
+  tailscaleInflight = null;
+}
+
+async function tailscaleCommandAddresses(): Promise<string[]> {
+  const flags: TailscaleFlag[] = ["-4", "-6"];
+  const outputs = await Promise.all(
+    TAILSCALE_BINS.flatMap((bin) =>
+      flags.map(async (flag) => {
+        try {
+          return await tailscaleRunner(bin, flag);
+        } catch {
+          // Timeout, missing binary, or signed out. An empty result keeps the door closed.
+          return "";
+        }
+      }),
+    ),
+  );
+  return outputs.flatMap((out) => out.split(/\s+/).filter(Boolean));
 }
 
 function inTailscaleRange(address: string): boolean {
@@ -140,17 +169,28 @@ export function confirmedTailscaleAddresses(input: {
   return [...new Set([...fromCli, ...fromDevice])];
 }
 
-let tailscaleCache: { at: number; ips: string[] } | null = null;
-
-/** Tailscale addresses that are actually on this computer. Cached for a few seconds. */
-export function localTailscaleAddresses(): string[] {
-  if (tailscaleCache && Date.now() - tailscaleCache.at < 5000) return tailscaleCache.ips;
-  const ips = confirmedTailscaleAddresses({
-    reported: tailscaleCommandAddresses(),
-    interfaces: namedInterfaces(),
+/**
+ * Tailscale addresses that are actually on this computer.
+ * The CLI is async and cached for 30 seconds so a request is not stuck behind it.
+ * `refresh` is for Check again. A timeout or a missing CLI yields no address,
+ * and the door stays closed.
+ */
+export async function localTailscaleAddresses(options?: { refresh?: boolean }): Promise<string[]> {
+  const cached = tailscaleCache;
+  if (!options?.refresh && cached && Date.now() - cached.at < TAILSCALE_CACHE_MS) return cached.ips;
+  if (tailscaleInflight) return tailscaleInflight;
+  const run = (async () => {
+    const ips = confirmedTailscaleAddresses({
+      reported: await tailscaleCommandAddresses(),
+      interfaces: namedInterfaces(),
+    });
+    tailscaleCache = { at: Date.now(), ips };
+    return ips;
+  })().finally(() => {
+    if (tailscaleInflight === run) tailscaleInflight = null;
   });
-  tailscaleCache = { at: Date.now(), ips };
-  return ips;
+  tailscaleInflight = run;
+  return run;
 }
 
 export interface NamedAddress {

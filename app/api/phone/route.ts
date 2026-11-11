@@ -83,7 +83,7 @@ export async function POST(req: Request) {
     setLanOptIn(false);
     await syncPhoneGateway();
   } else if (action === "recheck") {
-    await syncPhoneGateway();
+    await syncPhoneGateway({ refreshTailscale: true });
   } else if (action === "rename") {
     if (!deviceId || !name || !renameDevice(deviceId, name)) {
       return NextResponse.json({ error: "That phone is not paired." }, { status: 404 });

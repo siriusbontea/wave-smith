@@ -159,11 +159,11 @@ function remember(plan: BindPlan, port: number, server: http.Server | null, erro
 }
 
 /** Open or close the listener so it matches Tailscale (or this run's Wi-Fi choice). */
-export async function syncPhoneGateway(): Promise<void> {
+export async function syncPhoneGateway(options?: { refreshTailscale?: boolean }): Promise<void> {
   const plan = planPhoneBind({
     enabled: phoneAccessEnabled(),
     lan: lanOptIn(),
-    tailscale: localTailscaleAddresses(),
+    tailscale: await localTailscaleAddresses({ refresh: options?.refreshTailscale }),
   });
   const port = phoneListenPort();
   if (!plan.listen || !plan.host) {
@@ -418,7 +418,7 @@ function proxyToApp(
 ): void {
   const headers: http.OutgoingHttpHeaders = {};
   for (const [key, value] of Object.entries(req.headers)) {
-    if (HOP_BY_HOP.has(key) || key.startsWith("x-forwarded-")) continue;
+    if (HOP_BY_HOP.has(key) || key.startsWith("x-forwarded-") || key === "x-real-ip") continue;
     if (key === GATEWAY_SECRET_HEADER || key === "x-wavesmith-client" || key === INSTANCE_PROBE_HEADER) continue;
     headers[key] = value;
   }

@@ -46,6 +46,26 @@ test("a forged X-Forwarded-For is not treated as the Mac", async () => {
   expect(status).toBe(403);
 });
 
+test("X-Real-IP on its own is not treated as the Mac", async () => {
+  const status = await statusOf("/api/songs", { "x-real-ip": "203.0.113.8" });
+  expect(status).toBe(403);
+});
+
+test("Check again says when Tailscale is still missing", async ({ page, request }) => {
+  await dismissTourIfPresent(page);
+  const enabled = await request.post("/api/phone", {
+    data: { action: "enable" },
+    headers: macHeaders(),
+  });
+  expect(enabled.ok()).toBe(true);
+  await page.goto("/settings");
+  await page.getByTestId("phone-recheck").click();
+  await expect(page.getByTestId("phone-recheck-status")).toHaveText(
+    "Checked — no change, Tailscale still not found",
+  );
+  await request.post("/api/phone", { data: { action: "disable" }, headers: macHeaders() });
+});
+
 test("a paired phone forges from a non-loopback HTTP page", async ({ page, request }) => {
   await dismissTourIfPresent(page);
   const enabled = await request.post("/api/phone", {

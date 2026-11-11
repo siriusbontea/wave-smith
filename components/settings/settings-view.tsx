@@ -158,7 +158,7 @@ export function SettingsView() {
           </p>
         ) : null}
         {onPhone ? (
-          <p className="mt-3 text-sm text-muted-foreground">Change this on the computer.</p>
+          <p className="mt-3 text-sm text-muted-foreground">Test generation runs on your Mac.</p>
         ) : (
           <Button
             className="mt-4"
