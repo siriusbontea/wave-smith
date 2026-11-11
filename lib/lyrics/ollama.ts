@@ -11,6 +11,7 @@
  * — stripped here so callers always get clean lyrics.
  */
 import { env } from "@/lib/env";
+import { assertLoopbackBaseUrl } from "@/lib/phone/loopback";
 import type { LyricsBrief, LyricsClient } from "./types";
 
 const SYSTEM_PROMPT = `You are a professional songwriter. You write song lyrics on request.
@@ -25,7 +26,9 @@ export class OllamaLyricsClient implements LyricsClient {
   constructor(
     private readonly baseUrl: string = env.LYRICS_LLM_URL,
     private readonly model: string = env.LYRICS_MODEL,
-  ) {}
+  ) {
+    assertLoopbackBaseUrl(this.baseUrl, "LYRICS_LLM_URL");
+  }
 
   async available(): Promise<boolean> {
     try {

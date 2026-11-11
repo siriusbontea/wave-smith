@@ -59,7 +59,7 @@ Optional **Generate Lyrics** uses a local [Ollama](https://ollama.com) model. If
 
 ![Settings, Grok hybrid](docs/screenshots/settings-dark.png)
 
-**On a phone** (390 px wide).
+**Narrow screens** (390 px wide). These show the layout in a small window, not a paired phone. Pairing is in **Use it from your phone** below.
 
 <table>
   <tr>
@@ -170,6 +170,31 @@ First engine warm-up after boot takes about **45 seconds** with weights already 
 2. Enter a prompt (or click a preset)
 3. Click **Forge** (default: 2 variations)
 4. Watch the queue strip; when done, open **Library** to play
+
+### Use it from your phone
+
+The computer still does the generating. A phone on the same Wi-Fi can drive Wavesmith after you pair it. This is off until you turn it on.
+
+1. On the computer, open **Settings** and choose **Turn on** under **Use from a phone**.
+2. On the phone, scan the code with the camera (or open the address and type the code).
+3. Create, listen, edit, and download from the phone. If it sleeps, the queue keeps going on the computer.
+4. In Safari: Share → **Add to Home Screen**.
+5. **Turn off** or **Remove** a phone from Settings on the computer. The header shows **Phone on** while it is listening.
+
+![Phone access on, with a pairing code](docs/screenshots/phone-pair-mac.png)
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/phone-pair.png" width="280" alt="Pairing page on a phone"></td>
+    <td><img src="docs/screenshots/phone-create.png" width="280" alt="Create on a paired phone"></td>
+  </tr>
+  <tr>
+    <td>Before pairing</td>
+    <td>After pairing</td>
+  </tr>
+</table>
+
+The music engine never opens onto the Wi-Fi. Do not forward the port to the internet. Away from home, use Tailscale instead — steps and the security tradeoff are in [docs/PHONE.md](docs/PHONE.md).
 
 ### Languages & lyrics
 

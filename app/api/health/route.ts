@@ -49,6 +49,16 @@ export async function GET() {
     lyricsCache = { available, at: Date.now() };
   }
 
+  let phoneOn = false;
+  if (dbOk) {
+    try {
+      const phone = await import("@/lib/phone/store");
+      phoneOn = phone.phoneAccessEnabled();
+    } catch {
+      phoneOn = false;
+    }
+  }
+
   const grokKey = readGrokApiKey();
   let mode: "local" | "grok" = "local";
   let lyricsPolicy: "standard" | "unrestricted" = "standard";
@@ -84,6 +94,7 @@ export async function GET() {
           ? "Base weights are on disk. Extend loads them in place of turbo, then restores turbo."
           : BASE_MODEL_SETUP,
     },
+    phone: { enabled: phoneOn },
     timestamp: Date.now(),
   });
 }

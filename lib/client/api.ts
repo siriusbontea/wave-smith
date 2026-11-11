@@ -59,6 +59,7 @@ export interface HealthView {
     ready: boolean;
     hint: string;
   };
+  phone?: { enabled: boolean };
 }
 
 export interface EnhanceView {

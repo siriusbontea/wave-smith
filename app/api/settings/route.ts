@@ -17,6 +17,7 @@ import { listSettings, setSetting } from "@/lib/settings/queries";
 import { getEngineClient } from "@/lib/engine";
 import { BASE_DIT_MODEL, baseModelOnDisk } from "@/lib/engine/base-model";
 import { getLyricsClient } from "@/lib/lyrics";
+import { isPhoneClient } from "@/lib/phone/client";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,8 @@ function dirSizeBytes(dir: string): number {
   return total;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const viaPhone = isPhoneClient(req);
   const engine = await getEngineClient()
     .health()
     .catch(() => ({
@@ -46,6 +48,7 @@ export async function GET() {
   const grokKey = readGrokApiKey();
   return NextResponse.json({
     settings,
+    client: viaPhone ? "phone" : "mac",
     connection: {
       mode: getConnectionMode(),
       lyricsPolicy: getLyricsPolicy(),
@@ -53,11 +56,13 @@ export async function GET() {
       grokKeySource: grokKey.source,
       grokModel: env.XAI_MODEL,
     },
-    paths: {
-      dataDir: env.dataDir,
-      audioDir: env.audioDir,
-      engineDir: env.ENGINE_DIR,
-    },
+    paths: viaPhone
+      ? null
+      : {
+          dataDir: env.dataDir,
+          audioDir: env.audioDir,
+          engineDir: env.ENGINE_DIR,
+        },
     storage: {
       audioBytes: dirSizeBytes(env.audioDir),
       dbBytes: fs.existsSync(env.dbPath) ? fs.statSync(env.dbPath).size : 0,
@@ -96,6 +101,12 @@ export async function PATCH(req: Request) {
   const parsed = PatchSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request", issues: parsed.error.issues }, { status: 400 });
+  }
+  if (isPhoneClient(req) && (parsed.data.xaiApiKey !== undefined || parsed.data.clearXaiApiKey)) {
+    return NextResponse.json(
+      { error: "The API key stays on this computer. Add it there, not on the phone." },
+      { status: 403 },
+    );
   }
   if (parsed.data.theme !== undefined) setSetting("theme", parsed.data.theme);
   if (parsed.data.onboardingComplete !== undefined) {

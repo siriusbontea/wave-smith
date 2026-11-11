@@ -11,12 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { PhoneAccess } from "@/components/settings/phone-access";
 import { forge } from "@/lib/client/api";
 import { useHeldSubmit } from "@/lib/client/use-held-submit";
 
 interface SettingsResponse {
   settings: Record<string, string>;
-  paths: { dataDir: string; audioDir: string; engineDir: string };
+  paths: { dataDir: string; audioDir: string; engineDir: string } | null;
+  client?: "mac" | "phone";
   storage: { audioBytes: number; dbBytes: number };
   engine: {
     state: string;
@@ -109,6 +111,7 @@ export function SettingsView() {
 
   return (
     <div className="flex flex-col gap-8" data-testid="settings-page">
+      <PhoneAccess />
       <section className="rounded-xl border bg-card p-4">
         <h2 className="font-medium">Engine</h2>
         <dl className="mt-3 grid gap-2 text-sm">
@@ -210,6 +213,11 @@ export function SettingsView() {
             No key yet, so lyrics stay on this computer.
           </p>
         ) : null}
+        {data.client === "phone" ? (
+          <p className="mt-4 text-sm text-muted-foreground">
+            The API key stays on the computer. It is not sent to this phone.
+          </p>
+        ) : (
         <div className="mt-4 grid gap-1.5">
           <Label htmlFor="xai-key">xAI API key</Label>
           <p className="text-xs text-muted-foreground">
@@ -248,6 +256,7 @@ export function SettingsView() {
             ) : null}
           </div>
         </div>
+        )}
       </section>
 
       <section className="rounded-xl border bg-card p-4">
@@ -287,14 +296,18 @@ export function SettingsView() {
       <section className="rounded-xl border bg-card p-4">
         <h2 className="font-medium">Storage</h2>
         <dl className="mt-3 grid gap-2 text-sm">
-          <div className="flex justify-between gap-4">
-            <dt className="text-muted-foreground">Data directory</dt>
-            <dd className="truncate font-mono text-xs">{data.paths.dataDir}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-muted-foreground">Audio directory</dt>
-            <dd className="truncate font-mono text-xs">{data.paths.audioDir}</dd>
-          </div>
+          {data.paths ? (
+            <>
+              <div className="flex justify-between gap-4">
+                <dt className="text-muted-foreground">Data directory</dt>
+                <dd className="truncate font-mono text-xs">{data.paths.dataDir}</dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt className="text-muted-foreground">Audio directory</dt>
+                <dd className="truncate font-mono text-xs">{data.paths.audioDir}</dd>
+              </div>
+            </>
+          ) : null}
           <div className="flex justify-between gap-4">
             <dt className="text-muted-foreground">Audio on disk</dt>
             <dd>{formatBytes(data.storage.audioBytes)}</dd>
