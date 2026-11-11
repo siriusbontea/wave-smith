@@ -10,7 +10,8 @@ import path from "node:path";
 import { parseArgs } from "../cli/args.ts";
 import { doctorChecks, doctorFailed, nodeMajor } from "../cli/doctor.ts";
 import { childEnv, loadEnvFile } from "../cli/envfile.ts";
-import { parseBtime, parseProcStatStart, readProcessIdentity, isOurProcess } from "../cli/identity.ts";
+import { parseBtime, parseKernProcStart, parseProcStatStart, readProcessIdentity, isOurProcess, SUPERVISOR_MARKER } from "../cli/identity.ts";
+import { classifyDelete, hasWavesmithMarker } from "../cli/uninstall-guard.ts";
 import type { CliIo } from "../cli/io.ts";
 import { renderLaunchAgent } from "../cli/launchd.ts";
 import { releaseLock, takeStartLock, tryAcquireLock } from "../cli/lock.ts";
@@ -442,6 +443,81 @@ describe("process identity", () => {
     expect(parseProcStatStart(`7 (next (server)) ${fields.join(" ").replace("424242", "99")}`)).toBe("99");
     expect(parseBtime("cpu 1\nbtime 1700000000\n")).toBe("1700000000");
     expect(parseProcStatStart(fs.readFileSync("/proc/self/stat", "utf8"))).toMatch(/^\d+$/);
+    expect(parseKernProcStart("p_starttime = { tv_sec = 1700000000 tv_usec = 42 }")).toBe("1700000000.000042");
+  });
+
+  it("does not treat a renamed argv string as Wavesmith", () => {
+    const spoof = "node --experimental-strip-types cli/main.ts __supervise";
+    expect(
+      isOurProcess({
+        expectedStartedAt: "100:200",
+        marker: SUPERVISOR_MARKER,
+        actual: { command: `${spoof}\0`, startedAt: "100:200", executable: "/usr/bin/node" },
+      }),
+    ).toBe(false);
+    expect(
+      isOurProcess({
+        expectedStartedAt: "100:200",
+        marker: SUPERVISOR_MARKER,
+        actual: { command: `${spoof}\0`, startedAt: "100:200", executable: "/usr/bin/sleep" },
+      }),
+    ).toBe(false);
+    expect(
+      isOurProcess({
+        expectedStartedAt: "100:200",
+        marker: "next",
+        actual: { command: "next start --hostname 127.0.0.1", startedAt: "100:200", executable: "/bin/sleep" },
+      }),
+    ).toBe(false);
+    expect(
+      isOurProcess({
+        expectedStartedAt: "100:200",
+        marker: SUPERVISOR_MARKER,
+        actual: {
+          command: "/usr/bin/node\0--experimental-strip-types\0/workspace/cli/main.ts\0__supervise",
+          startedAt: "100:200",
+          executable: "/usr/bin/node",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("does not kill a process that only borrowed the supervisor name", async () => {
+    const child = spawn("bash", ["-c", "exec -a 'node --experimental-strip-types cli/main.ts __supervise' sleep 60"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const identity = readProcessIdentity(child.pid as number);
+    expect(identity).not.toBeNull();
+    expect(
+      isOurProcess({
+        expectedStartedAt: identity?.startedAt ?? "",
+        marker: SUPERVISOR_MARKER,
+        actual: identity,
+      }),
+    ).toBe(false);
+    const io = fakeIo();
+    io.written[`${io.stateDir}/wavesmith.pid`] = serializePid({
+      supervisorPid: child.pid as number,
+      enginePid: null,
+      appPid: null,
+      port: 3000,
+      startedAt: identity?.startedAt ?? "",
+      engineStartedAt: null,
+      appStartedAt: null,
+    });
+    io.processIdentity = (asked) => (asked === child.pid ? readProcessIdentity(asked) : null);
+    const signaled: number[] = [];
+    io.signal = (pid) => signaled.push(pid);
+    expect(await run(["stop"], io)).toBe(0);
+    expect(signaled).toEqual([]);
+    try {
+      process.kill(child.pid as number, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+    child.unref();
   });
 
   it("rejects a mismatched command or start time", () => {
@@ -656,12 +732,12 @@ describe("uninstall leftovers", () => {
   it("removes the PATH lines and the configured data and engine directories", async () => {
     const io = fakeIo();
     io.platform = "linux";
-    io.written[`${io.root}/.env`] = "DATA_DIR=/songs\nENGINE_DIR=/weights\n";
+    io.written[`${io.root}/.env`] = "DATA_DIR=/Users/ada/Wavesmith/songs\nENGINE_DIR=/Users/ada/Wavesmith/weights\n";
     io.written[`${io.home}/.zprofile`] = 'export A=1\n# Wavesmith\nexport PATH="$HOME/.local/bin:$PATH"\nexport B=2\n';
     io.written[`${io.home}/.bash_profile`] = "# Wavesmith\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
     expect(await run(["uninstall", "--delete-data", "--delete-weights"], io)).toBe(0);
-    expect(io.removed).toContain("/songs");
-    expect(io.removed).toContain("/weights");
+    expect(io.removed).toContain("/Users/ada/Wavesmith/songs");
+    expect(io.removed).toContain("/Users/ada/Wavesmith/weights");
     expect(io.removed).not.toContain("/Users/ada/Wavesmith/data");
     expect(io.removed).not.toContain("/Users/ada/Wavesmith/engine");
     expect(io.removed).not.toContain(`${io.root}/.env`);
@@ -672,5 +748,57 @@ describe("uninstall leftovers", () => {
       resolveConfiguredDir("/Users/ada/Wavesmith", "DATA_DIR=./library\n", "DATA_DIR", "data", {}),
     ).toBe("/Users/ada/Wavesmith/library");
     expect(stripWavesmithPath("keep\n# Wavesmith\nexport PATH=\"$HOME/.local/bin:$PATH\"\n")).toBe("keep\n");
+  });
+
+  it("refuses to delete /, home, an ancestor, a symlink to home, or a .. path", async () => {
+    const ancestor = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-home-"));
+    const home = path.join(ancestor, "ada");
+    const root = path.join(home, "Wavesmith");
+    fs.mkdirSync(root, { recursive: true });
+    const link = path.join(ancestor, "link-home");
+    fs.symlinkSync(home, link);
+    const cases: { key: "DATA_DIR" | "ENGINE_DIR" | "WAVESMITH_STATE_DIR"; value: string; flags: string[] }[] = [];
+    for (const key of ["DATA_DIR", "ENGINE_DIR", "WAVESMITH_STATE_DIR"] as const) {
+      const flags = key === "DATA_DIR" ? ["--delete-data"] : key === "ENGINE_DIR" ? ["--delete-weights"] : [];
+      cases.push(
+        { key, value: "/", flags },
+        { key, value: home, flags },
+        { key, value: ancestor, flags },
+        { key, value: link, flags },
+        { key, value: `${root}/../../..`, flags },
+      );
+    }
+    try {
+      for (const item of cases) {
+        const io = fakeIo();
+        io.home = home;
+        io.root = root;
+        io.stateDir = path.join(home, "Library", "Application Support", "Wavesmith");
+        io.env = { ...io.env, [item.key]: item.value };
+        const code = await run(["uninstall", ...item.flags], io);
+        expect(code, `${item.key}=${item.value}`).toBe(1);
+        expect(io.removed, `${item.key}=${item.value}`).not.toContain("/");
+        expect(io.removed, `${item.key}=${item.value}`).not.toContain(home);
+        expect(io.removed, `${item.key}=${item.value}`).not.toContain(ancestor);
+        expect(io.removed, `${item.key}=${item.value}`).not.toContain(link);
+        expect(io.removed, `${item.key}=${item.value}`).not.toContain(item.value);
+        expect(io.err, `${item.key}=${item.value}`).toMatch(/Refusing to delete/);
+        expect(fs.existsSync(home)).toBe(true);
+      }
+      const marked = path.join(ancestor, "songs");
+      fs.mkdirSync(marked);
+      fs.writeFileSync(path.join(marked, "setup-progress.json"), "{\"running\":false}");
+      const markedIo = fakeIo();
+      markedIo.home = home;
+      markedIo.root = root;
+      markedIo.stateDir = path.join(home, "Library", "Application Support", "Wavesmith");
+      markedIo.env = { ...markedIo.env, DATA_DIR: marked };
+      expect(hasWavesmithMarker(marked)).toBe(true);
+      expect(await run(["uninstall", "--delete-data"], markedIo)).toBe(0);
+      expect(markedIo.removed).toContain(marked);
+      expect(classifyDelete("/", { home, root, env: {} }).ok).toBe(false);
+    } finally {
+      fs.rmSync(ancestor, { recursive: true, force: true });
+    }
   });
 });

@@ -64,7 +64,10 @@ test("failed and stopped setup explain the next step", async ({ page }) => {
     await expect(page.getByTestId("setup-next")).toContainText("run the installer again");
     await expect(page.getByTestId("setup-next")).toContainText("songs stay");
     await expect(page.getByTestId("prompt-input")).toHaveCount(0);
-    await page.screenshot({ path: "/opt/cursor/artifacts/setup-failed.png", fullPage: true });
+    const cloudArtifacts = "/opt/cursor/artifacts";
+    const shotDir = fs.existsSync(cloudArtifacts) ? cloudArtifacts : path.join(process.cwd(), "test-results");
+    fs.mkdirSync(shotDir, { recursive: true });
+    await page.screenshot({ path: path.join(shotDir, "setup-failed.png"), fullPage: true });
 
     fs.writeFileSync(
       file,

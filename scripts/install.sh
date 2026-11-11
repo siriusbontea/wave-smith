@@ -13,6 +13,23 @@ set -euo pipefail
 DEST=""
 progress=""
 
+# WAVESMITH_DF_BEGIN
+# Available is the field before the Capacity percentage, so a filesystem name
+# with a space does not shift the column. df -P keeps one line per filesystem.
+free_kb_from_df() {
+  awk '
+    NR > 1 {
+      for (i = NF; i >= 1; i--) {
+        if ($i ~ /^[0-9]+%$/) {
+          if (i > 1) print $(i - 1)
+          exit
+        }
+      }
+    }
+  '
+}
+# WAVESMITH_DF_END
+
 cleanup() {
   local status=$?
   if [[ -n "${progress:-}" && -n "${DEST:-}" && -x "$DEST/scripts/mark-setup-stopped.sh" ]]; then
@@ -171,7 +188,7 @@ main() {
     need_gb=5
   fi
   local free_kb
-  free_kb="$(df -k "$DEST" | awk 'NR==2 { print $4 }')"
+  free_kb="$(df -Pk "$DEST" | free_kb_from_df)"
   if [[ ! "$free_kb" =~ ^[0-9]+$ ]]; then
     fail "Could not check free disk space in ${DEST}. Free about ${need_gb} GB, then run the installer again."
   fi

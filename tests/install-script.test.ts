@@ -28,7 +28,28 @@ describe("install.sh", () => {
     expect(source).toMatch(/--proto '=https' --tlsv1\.2/);
     expect(source).toMatch(/7986efac25016e41eed7e471666140c06f9d97cf/);
     expect(source).not.toMatch(/Homebrew\/install\/HEAD/);
-    expect(source).toMatch(/df -k/);
+    expect(source).toMatch(/df -Pk/);
+    expect(source).toMatch(/free_kb_from_df/);
+  });
+
+  it("reads free space from the field before the percent, even when the filesystem name has a space", () => {
+    const source = fs.readFileSync(path.join(root, "scripts/install.sh"), "utf8");
+    const start = source.indexOf("# WAVESMITH_DF_BEGIN");
+    const end = source.indexOf("# WAVESMITH_DF_END");
+    expect(start).toBeGreaterThan(-1);
+    const fn = source.slice(start, end);
+    const run = (line: string) =>
+      spawnSync(
+        "bash",
+        ["-c", `${fn}\nprintf '%s\\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' ${JSON.stringify(line)} | free_kb_from_df`],
+        { encoding: "utf8" },
+      );
+    const normal = run("/dev/disk1s1 100 40 60 40% /");
+    expect(normal.status).toBe(0);
+    expect(normal.stdout.trim()).toBe("60");
+    const spaced = run("map auto_home 10 20 30 5% /Volumes/My Disk");
+    expect(spaced.status).toBe(0);
+    expect(spaced.stdout.trim()).toBe("30");
   });
 
   it("a truncated installer does nothing", () => {

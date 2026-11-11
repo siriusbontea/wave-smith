@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { readProcessIdentity } from "./identity.ts";
 import type { CliIo } from "./io.ts";
 import { lockDir, releaseLock, takeStartLock } from "./lock.ts";
+import { classifyDelete } from "./uninstall-guard.ts";
 import { addressesOnPort, parseLsof, parseProcNet } from "./ports.ts";
 import { homeDir, repoRoot, stateDirectory } from "./paths.ts";
 import { supervise } from "./supervise.ts";
@@ -43,6 +44,11 @@ export function realIo(): CliIo {
       fs.writeFileSync(file, data);
     },
     remove(file) {
+      const verdict = classifyDelete(file, { home, root, env: process.env });
+      if (!verdict.ok) {
+        process.stderr.write(`${verdict.message}\n`);
+        return;
+      }
       fs.rmSync(file, { recursive: true, force: true });
     },
     exists(file) {

@@ -11,6 +11,7 @@ import type { CliIo } from "./io.ts";
 import { renderLaunchAgent } from "./launchd.ts";
 import { decideStart, parsePid, portFrom, type PidRecord } from "./pid.ts";
 import { lastLines, planUninstall, resolveConfiguredDir, stripWavesmithPath, updateCommands } from "./plans.ts";
+import { classifyDelete } from "./uninstall-guard.ts";
 
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   const parsed = parseArgs(argv);
@@ -310,21 +311,35 @@ function uninstall(io: CliIo, flags: Flags): number {
     io.stdout("Keeping data/ and the downloaded models. Pass --delete-data or --delete-weights to remove them.\n");
   }
   const envText = io.readText(`${io.root}/.env`);
+  const stateDir = io.env.WAVESMITH_STATE_DIR?.trim() || io.stateDir;
   const plan = planUninstall({
     root: io.root,
     home: io.home,
-    stateDir: io.stateDir,
+    stateDir,
     deleteData,
     deleteWeights,
     dataDir: resolveConfiguredDir(io.root, envText, "DATA_DIR", "data", io.env),
     engineDir: resolveConfiguredDir(io.root, envText, "ENGINE_DIR", "engine/ACE-Step-1.5", io.env),
   });
-  for (const path of plan.remove) io.remove(path);
+  let refused = 0;
+  for (const target of plan.remove) {
+    const verdict = classifyDelete(target, { home: io.home, root: io.root, env: io.env });
+    if (!verdict.ok) {
+      io.stderr(`${verdict.message}\n`);
+      refused += 1;
+      continue;
+    }
+    io.remove(target);
+  }
   for (const name of [".zprofile", ".bash_profile"]) {
     const file = `${io.home}/${name}`;
     const text = io.readText(file);
     if (!text || !text.includes("# Wavesmith")) continue;
     io.writeText(file, stripWavesmithPath(text));
+  }
+  if (refused > 0) {
+    io.stderr("Uninstall did not delete those folders.\n");
+    return 1;
   }
   io.stdout("Wavesmith is removed from the menu bar, the login item, and ~/.local/bin.\n");
   if (!deleteData && !deleteWeights) {
