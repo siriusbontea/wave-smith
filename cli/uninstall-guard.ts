@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { stateDirectory } from "./paths.ts";
 
 export interface DeleteVerdict {
   ok: boolean;
@@ -62,21 +63,91 @@ function isStrictlyInside(child: string, parent: string): boolean {
   return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
-/** The installer writes these. A directory that has one is a Wavesmith folder. */
-export function hasWavesmithMarker(dir: string): boolean {
-  const progress = path.join(dir, "setup-progress.json");
-  try {
-    if (fs.statSync(progress).isFile()) return true;
-  } catch {
-    // Not the data directory.
+/** Top-level system directories. macOS realpath of /tmp, /var, and /etc lands under /private. */
+export const SYSTEM_DIR_NAMES = [
+  "usr",
+  "var",
+  "opt",
+  "tmp",
+  "etc",
+  "bin",
+  "sbin",
+  "lib",
+  "System",
+  "Library",
+  "Applications",
+  "Users",
+  "private",
+  "Volumes",
+] as const;
+
+const MACOS_REALPATH_ALIASES = ["private/tmp", "private/var", "private/etc"] as const;
+
+const MARKER_PHASES = new Set(["setup", "weights", "failed", "stopped", "done"]);
+
+/** Files stop and the start lock may remove without deleting the state directory. */
+const STATE_BOOKKEEPING = new Set(["wavesmith.pid", "start.lock"]);
+
+export function systemDeleteAnchors(): string[] {
+  const disk = filesystemRoot("/");
+  const anchors = new Set<string>();
+  for (const name of SYSTEM_DIR_NAMES) {
+    const lexical = path.resolve(disk, name);
+    anchors.add(lexical);
+    try {
+      anchors.add(fs.realpathSync(lexical));
+    } catch {
+      // The directory is not on this machine. The lexical path stays denied.
+    }
   }
-  const rootFile = path.join(dir, "root");
+  for (const alias of MACOS_REALPATH_ALIASES) anchors.add(path.resolve(disk, alias));
+  return [...anchors];
+}
+
+/** Depth 1 from /, a known system directory, its realpath, or a parent of one of those. */
+export function isDeniedSystemPath(resolved: string, anchors: readonly string[]): boolean {
+  const disk = filesystemRoot(resolved);
+  if (resolved === disk) return true;
+  const rel = path.relative(disk, resolved);
+  if (rel.length > 0 && !rel.startsWith("..") && !rel.includes(path.sep)) return true;
+  for (const anchor of anchors) {
+    const place = path.resolve(anchor);
+    if (path.resolve(resolved) === place) return true;
+    if (isStrictlyInside(place, resolved)) return true;
+  }
+  return false;
+}
+
+/**
+ * setup-progress.json as the installer writes it.
+ * A file that only exists, or a `root` file that starts with "/", is not a marker.
+ */
+export function hasWavesmithMarker(dir: string): boolean {
+  let text: string;
   try {
-    if (!fs.statSync(rootFile).isFile()) return false;
-    return fs.readFileSync(rootFile, "utf8").trim().startsWith("/");
+    const progress = path.join(dir, "setup-progress.json");
+    if (!fs.statSync(progress).isFile()) return false;
+    text = fs.readFileSync(progress, "utf8");
   } catch {
     return false;
   }
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return false;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  const record = body as Record<string, unknown>;
+  if (typeof record.running !== "boolean") return false;
+  if (typeof record.phase !== "string" || !MARKER_PHASES.has(record.phase)) return false;
+  if (typeof record.message !== "string" || record.message.trim().length === 0) return false;
+  if (typeof record.updatedAt !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(record.updatedAt)) {
+    return false;
+  }
+  if (record.percent !== null && typeof record.percent !== "number") return false;
+  if (record.etaSeconds !== null && typeof record.etaSeconds !== "number") return false;
+  return true;
 }
 
 export function knownUninstallPaths(home: string, env: Record<string, string | undefined>): string[] {
@@ -126,8 +197,15 @@ export function classifyDelete(
       message: `Refusing to delete ${target}. That is the Wavesmith folder, so your songs stay put.`,
     };
   }
+  if (isDeniedSystemPath(resolved, systemDeleteAnchors())) {
+    return {
+      ok: false,
+      message: `Refusing to delete ${target}. That is a system folder.`,
+    };
+  }
   const installIsSafe = resolved !== disk && !samePath(root, disk) && !samePath(root, home) && !isStrictlyInside(home, root);
   if (installIsSafe && isStrictlyInside(resolved, root)) return { ok: true, message: "" };
+  if (isStateBookkeepingFile(resolved, { home, root, env: input.env })) return { ok: true, message: "" };
   for (const known of knownUninstallPaths(home, input.env)) {
     const place = resolveForDelete(known);
     if (samePath(resolved, place) || isStrictlyInside(resolved, place)) return { ok: true, message: "" };
@@ -141,4 +219,21 @@ export function classifyDelete(
     ok: false,
     message: `Refusing to delete ${target}. It is not inside the Wavesmith folder or a known Wavesmith location.`,
   };
+}
+
+/** Unlink wavesmith.pid or start.lock inside a custom state dir. The directory itself stays refused. */
+function isStateBookkeepingFile(
+  resolved: string,
+  input: { home: string; root: string; env: Record<string, string | undefined> },
+): boolean {
+  if (!STATE_BOOKKEEPING.has(path.basename(resolved))) return false;
+  const stateDir = resolveForDelete(
+    stateDirectory({ env: input.env, home: input.home, platform: process.platform }),
+  );
+  if (!samePath(path.dirname(resolved), stateDir)) return false;
+  const disk = filesystemRoot(stateDir);
+  if (stateDir === disk || samePath(stateDir, input.home) || samePath(stateDir, input.root)) return false;
+  if (isStrictlyInside(input.home, stateDir) || isStrictlyInside(input.root, stateDir)) return false;
+  if (isDeniedSystemPath(stateDir, systemDeleteAnchors())) return false;
+  return true;
 }

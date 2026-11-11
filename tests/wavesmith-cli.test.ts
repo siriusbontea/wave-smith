@@ -3,7 +3,7 @@
  * The machine is a fake. Nothing here binds a port or shells out.
  */
 import { describe, expect, it } from "vitest";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,14 +11,26 @@ import { parseArgs } from "../cli/args.ts";
 import { doctorChecks, doctorFailed, nodeMajor } from "../cli/doctor.ts";
 import { childEnv, loadEnvFile } from "../cli/envfile.ts";
 import { parseBtime, parseKernProcStart, parseProcStatStart, readProcessIdentity, isOurProcess, SUPERVISOR_MARKER } from "../cli/identity.ts";
-import { classifyDelete, hasWavesmithMarker } from "../cli/uninstall-guard.ts";
+import { classifyDelete, hasWavesmithMarker, isDeniedSystemPath, SYSTEM_DIR_NAMES } from "../cli/uninstall-guard.ts";
 import type { CliIo } from "../cli/io.ts";
 import { renderLaunchAgent } from "../cli/launchd.ts";
 import { releaseLock, takeStartLock, tryAcquireLock } from "../cli/lock.ts";
 import { decideStart, parsePid, portFrom, serializePid } from "../cli/pid.ts";
 import { lastLines, planUninstall, resolveConfiguredDir, stripWavesmithPath, updateCommands } from "../cli/plans.ts";
 import { addressesOnPort, assessPort, parseLsof, parseProcNet, parseSs } from "../cli/ports.ts";
+import { realIo } from "../cli/real-io.ts";
 import { run } from "../cli/run.ts";
+
+function installerProgress(): string {
+  return JSON.stringify({
+    running: false,
+    phase: "done",
+    percent: 100,
+    etaSeconds: null,
+    message: "Setup finished",
+    updatedAt: "2026-11-11T00:00:00.000Z",
+  });
+}
 
 const commands = ["start", "stop", "status", "open", "update", "doctor", "logs", "uninstall", "login"] as const;
 
@@ -307,7 +319,7 @@ describe("run", () => {
       appStartedAt: null,
     });
     io.processIdentity = (pid) =>
-      pid === 7 ? { command: "node cli/main.ts __supervise", startedAt: "sup" } : null;
+      pid === 7 ? { command: "node cli/main.ts __supervise", startedAt: "sup", executable: "/usr/bin/node" } : null;
     const code = await run(["start"], io);
     expect(code).toBe(0);
     expect(io.spawned).toBe(0);
@@ -345,9 +357,9 @@ describe("run", () => {
       appStartedAt: "app",
     });
     io.processIdentity = (pid) => {
-      if (pid === 9) return { command: "node cli/main.ts __supervise", startedAt: "sup" };
-      if (pid === 10) return { command: "uv run acestep-api --host 127.0.0.1", startedAt: "eng" };
-      if (pid === 11) return { command: "pnpm exec next start --hostname 127.0.0.1", startedAt: "app" };
+      if (pid === 9) return { command: "node cli/main.ts __supervise", startedAt: "sup", executable: "/usr/bin/node" };
+      if (pid === 10) return { command: "uv run acestep-api --host 127.0.0.1", startedAt: "eng", executable: "/usr/bin/uv" };
+      if (pid === 11) return { command: "pnpm exec next start --hostname 127.0.0.1", startedAt: "app", executable: "/usr/bin/pnpm" };
       return null;
     };
     const living = new Set([9, 10, 11]);
@@ -534,7 +546,21 @@ describe("process identity", () => {
       isOurProcess({
         expectedStartedAt: "100:200",
         marker: "cli/main.ts",
+        actual: { command: "node cli/main.ts __supervise", startedAt: "100:200", executable: "" },
+      }),
+    ).toBe(false);
+    expect(
+      isOurProcess({
+        expectedStartedAt: "100:200",
+        marker: "cli/main.ts",
         actual: { command: "node cli/main.ts __supervise", startedAt: "100:200" },
+      }),
+    ).toBe(false);
+    expect(
+      isOurProcess({
+        expectedStartedAt: "100:200",
+        marker: "cli/main.ts",
+        actual: { command: "node cli/main.ts __supervise", startedAt: "100:200", executable: "/usr/bin/node" },
       }),
     ).toBe(true);
     expect(isOurProcess({ expectedStartedAt: "", marker: "cli/main.ts", actual })).toBe(false);
@@ -611,7 +637,7 @@ describe("process identity", () => {
     io.processIdentity = () => {
       checks += 1;
       if (checks > 1) return { command: "sleep 60", startedAt: "other" };
-      return { command: "node cli/main.ts __supervise", startedAt: "sup" };
+      return { command: "node cli/main.ts __supervise", startedAt: "sup", executable: "/usr/bin/node" };
     };
     io.pidAlive = () => true;
     const signals: string[] = [];
@@ -701,9 +727,9 @@ describe("start lock and update", () => {
       appStartedAt: "app",
     });
     io.processIdentity = (pid) => {
-      if (pid === 9) return { command: "node cli/main.ts __supervise", startedAt: "sup" };
-      if (pid === 10) return { command: "acestep-api --host 127.0.0.1", startedAt: "eng" };
-      if (pid === 11) return { command: "next start --hostname 127.0.0.1", startedAt: "app" };
+      if (pid === 9) return { command: "node cli/main.ts __supervise", startedAt: "sup", executable: "/usr/bin/node" };
+      if (pid === 10) return { command: "acestep-api --host 127.0.0.1", startedAt: "eng", executable: "/usr/bin/acestep-api" };
+      if (pid === 11) return { command: "next start --hostname 127.0.0.1", startedAt: "app", executable: "/usr/bin/node" };
       return null;
     };
     const signaled: number[] = [];
@@ -787,7 +813,8 @@ describe("uninstall leftovers", () => {
       }
       const marked = path.join(ancestor, "songs");
       fs.mkdirSync(marked);
-      fs.writeFileSync(path.join(marked, "setup-progress.json"), "{\"running\":false}");
+      fs.writeFileSync(path.join(marked, "setup-progress.json"), installerProgress());
+      fs.writeFileSync(path.join(marked, "root"), "/some/path\n");
       const markedIo = fakeIo();
       markedIo.home = home;
       markedIo.root = root;
@@ -796,9 +823,111 @@ describe("uninstall leftovers", () => {
       expect(hasWavesmithMarker(marked)).toBe(true);
       expect(await run(["uninstall", "--delete-data"], markedIo)).toBe(0);
       expect(markedIo.removed).toContain(marked);
+      const weak = path.join(ancestor, "weak");
+      fs.mkdirSync(weak);
+      fs.writeFileSync(path.join(weak, "setup-progress.json"), "{\"running\":false}");
+      fs.writeFileSync(path.join(weak, "root"), "/Users/ada/Wavesmith\n");
+      expect(hasWavesmithMarker(weak)).toBe(false);
+      const weakIo = fakeIo();
+      weakIo.home = home;
+      weakIo.root = root;
+      weakIo.stateDir = path.join(home, "Library", "Application Support", "Wavesmith");
+      weakIo.env = { ...weakIo.env, DATA_DIR: weak };
+      expect(await run(["uninstall", "--delete-data"], weakIo)).toBe(1);
+      expect(weakIo.removed).not.toContain(weak);
       expect(classifyDelete("/", { home, root, env: {} }).ok).toBe(false);
     } finally {
       fs.rmSync(ancestor, { recursive: true, force: true });
     }
   });
+
+  it("refuses system directories with or without a planted marker", async () => {
+    const home = "/home/ada";
+    const root = "/home/ada/Wavesmith";
+    const ctx = { home, root, env: {} as Record<string, string | undefined> };
+    const targets = [
+      ...SYSTEM_DIR_NAMES.map((name) => `/${name}`),
+      "/private/tmp",
+      "/private/var",
+      "/private/etc",
+    ];
+    expect(isDeniedSystemPath("/opt/local", ["/opt/local/wavesmith"])).toBe(true);
+    expect(isDeniedSystemPath("/Users/ada/Wavesmith", [])).toBe(false);
+    for (const name of ["home", "root", "mnt", "srv", "boot"]) {
+      expect(isDeniedSystemPath(`/${name}`, []), name).toBe(true);
+    }
+    for (const dir of targets) {
+      expect(classifyDelete(dir, ctx).ok, `${dir} without a marker`).toBe(false);
+      const made = ensureEmptyDirs(dir);
+      const marker = path.join(dir, "setup-progress.json");
+      const planted = spawnSync("sudo", ["tee", marker], { input: installerProgress(), encoding: "utf8" });
+      expect(planted.status, dir).toBe(0);
+      try {
+        expect(hasWavesmithMarker(dir), dir).toBe(true);
+        const verdict = classifyDelete(dir, ctx);
+        expect(verdict.ok, `${dir} with a marker`).toBe(false);
+        expect(verdict.message).toMatch(/system folder|home folder|Wavesmith install|whole disk/);
+        const io = fakeIo();
+        io.home = home;
+        io.root = root;
+        io.env = { DATA_DIR: dir };
+        expect(await run(["uninstall", "--delete-data"], io)).toBe(1);
+        expect(io.removed).not.toContain(dir);
+      } finally {
+        const removedFile = spawnSync("sudo", ["rm", "-f", marker], { encoding: "utf8" });
+        if (removedFile.status !== 0) throw new Error(removedFile.stderr || `could not remove ${marker}`);
+        for (const created of made.reverse()) {
+          const removedDir = spawnSync("sudo", ["rmdir", created], { encoding: "utf8" });
+          if (removedDir.status !== 0) throw new Error(removedDir.stderr || `could not remove ${created}`);
+        }
+      }
+    }
+  });
+
+  it("unlinks the pid and lock in a custom state dir without deleting the dir", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-state-"));
+    const pid = path.join(dir, "wavesmith.pid");
+    const lock = path.join(dir, "start.lock");
+    const other = path.join(dir, "notes.txt");
+    fs.writeFileSync(pid, "{}\n");
+    fs.mkdirSync(lock);
+    fs.writeFileSync(other, "keep\n");
+    const previous = process.env.WAVESMITH_STATE_DIR;
+    process.env.WAVESMITH_STATE_DIR = dir;
+    const home = "/home/ada";
+    const root = "/home/ada/Wavesmith";
+    const env = { WAVESMITH_STATE_DIR: dir };
+    try {
+      expect(classifyDelete(dir, { home, root, env }).ok).toBe(false);
+      expect(classifyDelete(other, { home, root, env }).ok).toBe(false);
+      expect(classifyDelete(pid, { home, root, env }).ok).toBe(true);
+      expect(classifyDelete(lock, { home, root, env }).ok).toBe(true);
+      const io = realIo();
+      io.remove(pid);
+      io.remove(lock);
+      io.remove(dir);
+      expect(fs.existsSync(pid)).toBe(false);
+      expect(fs.existsSync(lock)).toBe(false);
+      expect(fs.existsSync(dir)).toBe(true);
+      expect(fs.existsSync(other)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.WAVESMITH_STATE_DIR;
+      else process.env.WAVESMITH_STATE_DIR = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
+
+function ensureEmptyDirs(dir: string): string[] {
+  const made: string[] = [];
+  const parts = dir.split("/").filter((part) => part.length > 0);
+  let cursor = "";
+  for (const part of parts) {
+    cursor += `/${part}`;
+    if (fs.existsSync(cursor)) continue;
+    const created = spawnSync("sudo", ["mkdir", cursor], { encoding: "utf8" });
+    if (created.status !== 0) throw new Error(created.stderr || `could not create ${cursor}`);
+    made.push(cursor);
+  }
+  return made;
+}

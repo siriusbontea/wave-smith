@@ -1,5 +1,5 @@
 /**
- * cli/identity.ts — a pid is Wavesmith only when the command and the start time match.
+ * cli/identity.ts — a pid is Wavesmith only when the command, the executable, and the start time match.
  * A reused pid after reboot or exit has a different start time. That is stale.
  * Callers must not signal a stale pid.
  */
@@ -56,7 +56,7 @@ export function executableMatches(executable: string, marker: string): boolean {
   return (EXECUTABLES[marker] ?? []).includes(base);
 }
 
-/** Both the recorded start time and an exact argv path must match. A renamed sleep does not. */
+/** Start time, an exact argv path, and a real executable must all match. An empty executable fails closed. */
 export function isOurProcess(input: {
   expectedStartedAt: string;
   marker: string;
@@ -66,7 +66,8 @@ export function isOurProcess(input: {
   if (!input.expectedStartedAt) return false;
   if (input.actual.startedAt !== input.expectedStartedAt) return false;
   if (!commandHasMarker(input.actual.command, input.marker)) return false;
-  if (input.actual.executable && !executableMatches(input.actual.executable, input.marker)) return false;
+  const executable = input.actual.executable?.trim() ?? "";
+  if (!executable || !executableMatches(executable, input.marker)) return false;
   return true;
 }
 
