@@ -41,7 +41,7 @@ export function StatusBanner() {
         <details className="mt-1 text-muted-foreground">
           <summary className="cursor-pointer">How it works</summary>
           <p className="mt-1">
-            Start it with <code className="rounded bg-muted px-1 py-0.5">./scripts/dev.sh</code> and
+            Start it with <code className="rounded bg-muted px-1 py-0.5">wavesmith start</code> and
             open <code className="rounded bg-muted px-1 py-0.5">http://127.0.0.1:3000</code>.
           </p>
         </details>
@@ -60,7 +60,7 @@ export function StatusBanner() {
           <summary className="cursor-pointer">How it works</summary>
           <p className="mt-1">
             Whoever set up this computer can start it with{" "}
-            <code className="rounded bg-muted px-1 py-0.5">scripts/dev.sh</code>.
+            <code className="rounded bg-muted px-1 py-0.5">wavesmith start</code>.
           </p>
         </details>
       </div>
@@ -76,7 +76,7 @@ export function StatusBanner() {
         <span className="mt-1 block text-muted-foreground">
           Models load on your first <strong>Forge</strong> — stem separation uses Demucs separately
           and does not need the engine. If Forge also fails, restart{" "}
-          <code className="rounded bg-muted px-1 py-0.5">./scripts/dev.sh</code>.
+          <code className="rounded bg-muted px-1 py-0.5">wavesmith start</code>.
         </span>
       ) : null}
     </div>

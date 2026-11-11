@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# scripts/wavesmith — the Wavesmith command.
+# Finds this checkout (even via the ~/.local/bin symlink) and stays on 127.0.0.1.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+
+export PATH="${HOME}/.local/bin:${PATH}"
+if [[ -d /opt/homebrew/bin ]]; then
+  export PATH="/opt/homebrew/bin:${PATH}"
+fi
+if [[ -d /usr/local/bin ]]; then
+  export PATH="/usr/local/bin:${PATH}"
+fi
+if [[ -d /opt/homebrew/opt/python@3.12/bin ]]; then
+  export PATH="/opt/homebrew/opt/python@3.12/bin:${PATH}"
+fi
+if [[ -d /usr/local/opt/python@3.12/bin ]]; then
+  export PATH="/usr/local/opt/python@3.12/bin:${PATH}"
+fi
+# Prefer the Node 22 keg without replacing another Node on the Mac.
+if [[ -x /opt/homebrew/opt/node@22/bin/node ]]; then
+  export PATH="/opt/homebrew/opt/node@22/bin:${PATH}"
+elif [[ -x /usr/local/opt/node@22/bin/node ]]; then
+  export PATH="/usr/local/opt/node@22/bin:${PATH}"
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  printf 'Node.js is not installed.\nFix: brew install node@22\n' >&2
+  exit 1
+fi
+
+export WAVESMITH_ROOT="$ROOT"
+cd "$ROOT"
+exec node --experimental-strip-types "$ROOT/cli/main.ts" "$@"

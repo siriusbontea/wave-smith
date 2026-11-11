@@ -11,10 +11,14 @@ import path from "node:path";
 // Isolated runtime data per run: the smoke suite must not touch real
 // libraries. Guarded so worker processes (which also evaluate this config)
 // don't each leak an orphan temp dir.
+const dataPointer = path.join(os.tmpdir(), "wavesmith-e2e-datadir");
 const dataDir =
   process.env.TEST_WORKER_INDEX === undefined
     ? fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-e2e-"))
-    : "";
+    : fs.readFileSync(dataPointer, "utf8").trim();
+if (process.env.TEST_WORKER_INDEX === undefined) {
+  fs.writeFileSync(dataPointer, dataDir);
+}
 
 export default defineConfig({
   testDir: "./e2e",

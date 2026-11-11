@@ -54,7 +54,7 @@ A wrong code waits a short moment, then you can try again. The wait does not kee
 
 ## For developers
 
-The Wavesmith app stays on `127.0.0.1:3000`. The music engine stays on `127.0.0.1:8001`. Ollama, if you use it, stays on `127.0.0.1:11434`. None of those open onto the network. `pnpm dev` and `pnpm start` bind the app to `127.0.0.1`, same as `./scripts/dev.sh` and `./scripts/start.sh`.
+The Wavesmith app stays on `127.0.0.1:3000`. The music engine stays on `127.0.0.1:8001`. Ollama, if you use it, stays on `127.0.0.1:11434`. None of those open onto the network. `wavesmith start`, `pnpm dev`, and `pnpm start` bind the app to `127.0.0.1`, same as `./scripts/dev.sh` and `./scripts/start.sh`. The login item does not contain `.env` or the gateway secret.
 
 While phone access is on, the phone door uses port **8787** (`PHONE_PORT`). It listens only on an address Tailscale reports (`tailscale ip -4` and `-6`, including the Mac app at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`) or on an interface named `tailscale0`. That address is often `100.x.y.z`, or an IPv6 address starting with `fd7a:115c:a1e0:`. A `100.x` address from the home network or another VPN is not enough, and the door stays closed. The lookup is asynchronous and times out after 2 seconds. A result can be cached for 30 seconds, and that wait only delays opening the door. If the address disappears, `tailscale0` drops, or the CLI stops answering while the door is open, the next check closes it. **Check again** runs the lookup immediately, and a Settings poll does not cancel that result. A timeout leaves the door closed.
 

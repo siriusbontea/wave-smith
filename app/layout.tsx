@@ -31,6 +31,7 @@ export const viewport: Viewport = {
 };
 
 import { Providers } from "@/components/providers";
+import { SetupGate } from "@/components/setup-gate";
 import { StatusBanner } from "@/components/status-banner";
 import { MiniPlayer } from "@/components/mini-player";
 import { KeyboardPlayer } from "@/components/keyboard-player";
@@ -50,12 +51,14 @@ export default function RootLayout({
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <Providers>
-          <StatusBanner />
-          <StudioNav />
-          <PageFrame>{children}</PageFrame>
-          <MiniPlayer />
-          <KeyboardPlayer />
-          <OnboardingTour />
+          <SetupGate>
+            <StatusBanner />
+            <StudioNav />
+            <PageFrame>{children}</PageFrame>
+            <MiniPlayer />
+            <KeyboardPlayer />
+            <OnboardingTour />
+          </SetupGate>
         </Providers>
       </body>
     </html>
