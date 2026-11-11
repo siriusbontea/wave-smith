@@ -3,8 +3,10 @@
  * Every target is resolved with realpath. Recursive delete is an allowlist:
  * data/, engine/, node_modules, and the Next build inside the checkout; the
  * launcher, menu bar app, login item, and state directory under home; or a
- * custom data, engine, or state directory inside home that has the installer's
- * marker. Anything outside home is refused. The old denials stay in front.
+ * custom data, engine, or state directory inside home whose name contains
+ * "Wavesmith" and has the installer's marker. Documents, Music, Library, .ssh,
+ * and the other standard home folders are refused. A symlink is unlinked.
+ * The folder it points at is not removed. Anything outside home is refused.
  */
 
 import fs from "node:fs";
@@ -15,20 +17,43 @@ import { resolveConfiguredDir } from "./plans.ts";
 export interface DeleteVerdict {
   ok: boolean;
   message: string;
+  /** The path is a symlink. Remove the link and leave the folder it points at. */
+  unlinkOnly?: boolean;
 }
 
 /** Filesystem calls the guard needs. Tests pass a fake root so nothing touches the real disk. */
 export interface DeleteIO {
   realpathSync(target: string): string;
+  lstatSync(target: string): { isSymbolicLink(): boolean };
   statSync(target: string): { isFile(): boolean; isDirectory(): boolean };
   readFileSync(target: string, encoding: "utf8"): string;
 }
 
 const hostDeleteIO: DeleteIO = {
   realpathSync: (target) => fs.realpathSync(target),
+  lstatSync: (target) => fs.lstatSync(target),
   statSync: (target) => fs.statSync(target),
   readFileSync: (target, encoding) => fs.readFileSync(target, encoding),
 };
+
+/** Standard home folders. A custom data or state path may not be one of these, or a parent of one. */
+export const HOME_FOLDER_DENY = [
+  "Library",
+  "Documents",
+  "Desktop",
+  "Downloads",
+  "Music",
+  "Movies",
+  "Pictures",
+  "Public",
+  "Applications",
+  ".ssh",
+  ".gnupg",
+  ".config",
+  ".local",
+  ".cache",
+  "iCloud Drive",
+] as const;
 
 /** data/, the engine tree, dependencies, and the Next build. Nothing else in the checkout. */
 const INSTALL_SUBDIRS = ["data", "engine", "node_modules", ".next"] as const;
@@ -206,16 +231,77 @@ function matchesTree(resolved: string, place: string): boolean {
   return samePath(resolved, place) || isStrictlyInside(resolved, place);
 }
 
+function deniedHomePaths(home: string): string[] {
+  const paths = HOME_FOLDER_DENY.map((name) => path.join(home, name));
+  paths.push(path.join(home, "Library", "Application Support"));
+  paths.push(path.join(home, "Library", "Mobile Documents"));
+  paths.push(path.join(home, "Library", "Mobile Documents", "com~apple~CloudDocs"));
+  return paths;
+}
+
+/** A well-known home folder, or a parent that would take that folder with it. */
+export function isDeniedHomeFolder(resolved: string, home: string): boolean {
+  for (const place of deniedHomePaths(home)) {
+    const abs = path.resolve(place);
+    if (samePath(resolved, abs)) return true;
+    if (isStrictlyInside(abs, resolved)) return true;
+  }
+  return false;
+}
+
+function basenameHasWavesmith(resolved: string): boolean {
+  return path.basename(resolved).toLowerCase().includes("wavesmith");
+}
+
+/** The checkout is the home folder, or a parent of it. Uninstall must not run. */
+export function checkoutBlocksUninstall(home: string, root: string, io: DeleteIO = hostDeleteIO): boolean {
+  const resolvedHome = resolveForDelete(home, io);
+  const resolvedRoot = resolveForDelete(root, io);
+  return samePath(resolvedHome, resolvedRoot) || isStrictlyInside(resolvedHome, resolvedRoot);
+}
+
+function isKnownLeaf(lexical: string, home: string, env: Record<string, string | undefined>): boolean {
+  const abs = path.resolve(lexical);
+  return knownUninstallPaths(home, env).some((known) => samePath(abs, known));
+}
+
+/** A configured directory that is a symlink may lose the link. The target stays. */
+function customLinkMayUnlink(
+  lexical: string,
+  home: string,
+  root: string,
+  env: Record<string, string | undefined>,
+  io: DeleteIO,
+): boolean {
+  const configured = (["DATA_DIR", "ENGINE_DIR", "WAVESMITH_STATE_DIR"] as const).some((key) => {
+    const raw = env[key]?.trim();
+    if (!raw) return false;
+    const place = path.resolve(raw.startsWith("/") ? raw : path.resolve(root, raw));
+    return samePath(place, lexical);
+  });
+  if (!configured) return false;
+  if (!isStrictlyInside(lexical, home)) return false;
+  if (!basenameHasWavesmith(lexical)) return false;
+  if (isDeniedHomeFolder(lexical, home)) return false;
+  return hasWavesmithMarker(lexical, io);
+}
+
 /** The directories uninstall is willing to remove, after the hard denials. */
 function isAllowedRecursive(
   resolved: string,
   input: { home: string; root: string; env: Record<string, string | undefined>; io: DeleteIO },
 ): boolean {
   if (!isStrictlyInside(resolved, input.home)) return false;
-  for (const name of INSTALL_SUBDIRS) {
-    if (matchesTree(resolved, path.resolve(input.root, name))) return true;
+  if (isDeniedHomeFolder(resolved, input.home)) return false;
+  // ~/data is not Wavesmith's data when the checkout is the home folder itself.
+  if (isStrictlyInside(input.root, input.home)) {
+    for (const name of INSTALL_SUBDIRS) {
+      if (matchesTree(resolved, path.resolve(input.root, name))) return true;
+    }
   }
   for (const known of knownUninstallPaths(input.home, input.env)) {
+    // A symlink is unlinked by the caller. Its target is not an allowed tree.
+    if (isSymbolicLink(known, input.io)) continue;
     const place = resolveForDelete(known, input.io);
     if (!isStrictlyInside(place, input.home)) continue;
     if (matchesTree(resolved, place)) return true;
@@ -223,8 +309,12 @@ function isAllowedRecursive(
   for (const key of ["DATA_DIR", "ENGINE_DIR", "WAVESMITH_STATE_DIR"] as const) {
     const raw = input.env[key]?.trim();
     if (!raw) continue;
-    const configured = resolveForDelete(raw.startsWith("/") ? raw : path.resolve(input.root, raw), input.io);
+    const lexical = path.resolve(raw.startsWith("/") ? raw : path.resolve(input.root, raw));
+    if (isSymbolicLink(lexical, input.io)) continue;
+    const configured = resolveForDelete(lexical, input.io);
     if (!isStrictlyInside(configured, input.home)) continue;
+    if (!basenameHasWavesmith(configured)) continue;
+    if (isDeniedHomeFolder(configured, input.home)) continue;
     if (!matchesTree(resolved, configured)) continue;
     if (hasWavesmithMarker(configured, input.io)) return true;
   }
@@ -241,6 +331,20 @@ export function classifyDelete(
   input: { home: string; root: string; env: Record<string, string | undefined>; io?: DeleteIO },
 ): DeleteVerdict {
   const io = input.io ?? hostDeleteIO;
+  if (isSymbolicLink(target, io)) {
+    const pointed = resolveForDelete(target, io);
+    const home = resolveForDelete(input.home, io);
+    const root = resolveForDelete(input.root, io);
+    const lexical = path.resolve(target.trim());
+    const stays = `Unlinking ${target}. It points at ${pointed}, which stays.`;
+    if (isKnownLeaf(lexical, home, input.env) || customLinkMayUnlink(lexical, home, root, input.env, io)) {
+      return { ok: true, unlinkOnly: true, message: stays };
+    }
+    return {
+      ok: false,
+      message: `Refusing to delete ${target}. That link points at ${pointed}, which stays.`,
+    };
+  }
   const resolved = resolveForDelete(target, io);
   const home = resolveForDelete(input.home, io);
   const root = resolveForDelete(input.root, io);
@@ -270,6 +374,15 @@ export function classifyDelete(
     };
   }
   if (isStateBookkeepingFile(resolved, { home, root, env: input.env, io })) return { ok: true, message: "" };
+  if (checkoutBlocksUninstall(home, root, io)) {
+    return {
+      ok: false,
+      message: `Refusing to delete ${target}. The Wavesmith folder is your home folder, or it contains your home.`,
+    };
+  }
+  if (isDeniedHomeFolder(resolved, home)) {
+    return { ok: false, message: `Refusing to delete ${target}. That home folder stays.` };
+  }
   if (!isStrictlyInside(resolved, home)) {
     return { ok: false, message: `Refusing to delete ${target}. That is outside your home folder.` };
   }
@@ -278,6 +391,37 @@ export function classifyDelete(
     ok: false,
     message: `Refusing to delete ${target}. It is not inside the Wavesmith folder or a known Wavesmith location.`,
   };
+}
+
+function isSymbolicLink(target: string, io: DeleteIO): boolean {
+  try {
+    return io.lstatSync(target).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** Recursive delete follows a real directory. A symlink is unlinked and its target stays. */
+export function commitDelete(file: string, verdict: DeleteVerdict): void {
+  if (!verdict.ok && !verdict.unlinkOnly) return;
+  let link = verdict.unlinkOnly === true;
+  if (!link) {
+    try {
+      link = fs.lstatSync(file).isSymbolicLink();
+    } catch {
+      link = false;
+    }
+  }
+  if (link) {
+    try {
+      fs.unlinkSync(file);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") throw err;
+    }
+    return;
+  }
+  fs.rmSync(file, { recursive: true, force: true });
 }
 
 /** Unlink wavesmith.pid or start.lock inside a custom state dir. The directory itself stays refused. */

@@ -4,6 +4,7 @@
  * unless uninstall is told to delete them.
  */
 
+import fs from "node:fs";
 import { parseArgs, type Flags } from "./args.ts";
 import { doctorChecks, doctorFailed, formatDoctor, type DoctorInput } from "./doctor.ts";
 import { APP_MARKER, ENGINE_MARKER, SUPERVISOR_MARKER, isOurProcess } from "./identity.ts";
@@ -11,7 +12,7 @@ import type { CliIo } from "./io.ts";
 import { renderLaunchAgent } from "./launchd.ts";
 import { decideStart, parsePid, portFrom, type PidRecord } from "./pid.ts";
 import { lastLines, planUninstall, stripWavesmithPath, updateCommands } from "./plans.ts";
-import { classifyDelete, deleteClassifyEnv } from "./uninstall-guard.ts";
+import { checkoutBlocksUninstall, classifyDelete, deleteClassifyEnv } from "./uninstall-guard.ts";
 
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   const parsed = parseArgs(argv);
@@ -297,6 +298,10 @@ function logs(io: CliIo, follow: boolean): number {
 }
 
 function uninstall(io: CliIo, flags: Flags): number {
+  if (checkoutBlocksUninstall(io.home, io.root)) {
+    io.stderr("Refusing to uninstall. The Wavesmith folder is your home folder, or it contains your home.\n");
+    return 1;
+  }
   stop(io);
   const plistPath = `${io.home}/Library/LaunchAgents/com.wavesmith.login.plist`;
   if (io.platform === "darwin") {
@@ -321,11 +326,17 @@ function uninstall(io: CliIo, flags: Flags): number {
     deleteWeights,
     dataDir: deleteEnv.DATA_DIR ?? `${io.root}/data`,
     engineDir: deleteEnv.ENGINE_DIR ?? `${io.root}/engine/ACE-Step-1.5`,
+    inspect: {
+      realpath: (target) => fs.realpathSync(target),
+      isSymlink: (target) => fs.lstatSync(target).isSymbolicLink(),
+    },
   });
   let refused = 0;
-  for (const target of plan.remove) {
+  for (const note of plan.notes) io.stdout(`${note}\n`);
+  const planned = [...plan.remove, ...plan.unlink.map((item) => item.link)];
+  for (const target of planned) {
     const verdict = classifyDelete(target, { home: io.home, root: io.root, env: deleteEnv });
-    if (!verdict.ok) {
+    if (!verdict.ok && !verdict.unlinkOnly) {
       io.stderr(`${verdict.message}\n`);
       refused += 1;
       continue;

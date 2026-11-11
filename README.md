@@ -386,7 +386,7 @@ All variables are documented in [`.env.example`](.env.example). Common ones:
 |----------|---------|-------|
 | `PORT` | `3000` | App URL port |
 | `ENGINE_URL` | `http://127.0.0.1:8001` | ACE-Step REST API |
-| `DATA_DIR` | `./data` | Library DB + audio (see layout below) |
+| `DATA_DIR` | `./data` | Library DB + audio (see layout below). A custom `DATA_DIR`, `ENGINE_DIR`, or `WAVESMITH_STATE_DIR` is deleted only when its name includes Wavesmith. Uninstall will not delete Documents, Desktop, Music, Library, .ssh, or the other standard home folders. |
 | `MOCK_ENGINE` | `0` | Set `1` for demo mode |
 | `LYRICS_MODEL` | `dolphin3:8b` | Ollama tag for Generate Lyrics |
 | `XAI_API_KEY` | unset | Optional. Grok hybrid only. Prefer this or the Settings key file — never commit it |

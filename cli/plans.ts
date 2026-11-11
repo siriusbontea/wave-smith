@@ -16,9 +16,22 @@ export function updateCommands(): string[][] {
   ];
 }
 
+export interface UninstallLink {
+  link: string;
+  target: string;
+}
+
 export interface UninstallPlan {
   remove: string[];
+  /** Symlinks. The link is removed. The folder it points at is not. */
+  unlink: UninstallLink[];
   keep: string[];
+  notes: string[];
+}
+
+export interface UninstallInspect {
+  realpath(target: string): string;
+  isSymlink(target: string): boolean;
 }
 
 export function resolveConfiguredDir(
@@ -43,19 +56,64 @@ export function planUninstall(input: {
   deleteWeights: boolean;
   dataDir: string;
   engineDir: string;
+  inspect?: UninstallInspect;
 }): UninstallPlan {
-  const remove = [
+  const candidates = [
     `${input.home}/.local/bin/wavesmith`,
     `${input.home}/Applications/Wavesmith.app`,
     `${input.home}/Library/LaunchAgents/com.wavesmith.login.plist`,
     input.stateDir,
   ];
   const keep = [`${input.root}/.env`];
-  if (input.deleteData) remove.push(input.dataDir);
+  if (input.deleteData) candidates.push(input.dataDir);
   else keep.push(input.dataDir);
-  if (input.deleteWeights) remove.push(input.engineDir);
+  if (input.deleteWeights) candidates.push(input.engineDir);
   else keep.push(input.engineDir);
-  return { remove, keep };
+  const remove: string[] = [];
+  const unlink: UninstallLink[] = [];
+  const notes: string[] = [];
+  for (const candidate of candidates) {
+    const placed = placePlannedPath(candidate, input.inspect);
+    if (placed.unlink) {
+      unlink.push(placed.unlink);
+      notes.push(placed.note);
+    } else {
+      remove.push(placed.remove);
+    }
+  }
+  return { remove, unlink, keep, notes };
+}
+
+/** A symlink stays a link in the plan. Its real path is named, and it is not a recursive delete. */
+function placePlannedPath(
+  candidate: string,
+  inspect: UninstallInspect | undefined,
+): { remove: string; unlink?: UninstallLink; note: string } {
+  if (!inspect) return { remove: candidate, note: "" };
+  let symlink = false;
+  try {
+    symlink = inspect.isSymlink(candidate);
+  } catch {
+    symlink = false;
+  }
+  if (!symlink) {
+    try {
+      return { remove: inspect.realpath(candidate), note: "" };
+    } catch {
+      return { remove: candidate, note: "" };
+    }
+  }
+  let target = candidate;
+  try {
+    target = inspect.realpath(candidate);
+  } catch {
+    target = candidate;
+  }
+  return {
+    remove: candidate,
+    unlink: { link: candidate, target },
+    note: `Unlinking ${candidate}. It points at ${target}, which stays.`,
+  };
 }
 
 /** Drop the installer's PATH lines and leave the rest of the profile alone. */

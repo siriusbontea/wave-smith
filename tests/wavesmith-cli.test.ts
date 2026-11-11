@@ -11,7 +11,15 @@ import { parseArgs } from "../cli/args.ts";
 import { doctorChecks, doctorFailed, nodeMajor } from "../cli/doctor.ts";
 import { childEnv, loadEnvFile } from "../cli/envfile.ts";
 import { parseBtime, parseKernProcStart, parseProcStatStart, readProcessIdentity, isOurProcess, SUPERVISOR_MARKER } from "../cli/identity.ts";
-import { classifyDelete, hasWavesmithMarker, isDeniedSystemPath, SYSTEM_DIR_NAMES, type DeleteIO } from "../cli/uninstall-guard.ts";
+import {
+  checkoutBlocksUninstall,
+  classifyDelete,
+  commitDelete,
+  hasWavesmithMarker,
+  isDeniedSystemPath,
+  SYSTEM_DIR_NAMES,
+  type DeleteIO,
+} from "../cli/uninstall-guard.ts";
 import type { CliIo } from "../cli/io.ts";
 import { renderLaunchAgent } from "../cli/launchd.ts";
 import { releaseLock, takeStartLock, tryAcquireLock } from "../cli/lock.ts";
@@ -823,7 +831,18 @@ describe("uninstall leftovers", () => {
       expect(hasWavesmithMarker(marked)).toBe(true);
       expect(await run(["uninstall", "--delete-data"], markedIo)).toBe(1);
       expect(markedIo.removed).not.toContain(marked);
-      const inside = path.join(home, "Music");
+      const music = path.join(home, "Music");
+      fs.mkdirSync(music);
+      fs.writeFileSync(path.join(music, "setup-progress.json"), installerProgress());
+      const musicIo = fakeIo();
+      musicIo.home = home;
+      musicIo.root = root;
+      musicIo.stateDir = path.join(home, "Library", "Application Support", "Wavesmith");
+      musicIo.env = { ...musicIo.env, DATA_DIR: music };
+      expect(await run(["uninstall", "--delete-data"], musicIo)).toBe(1);
+      expect(musicIo.removed).not.toContain(music);
+      expect(fs.existsSync(music)).toBe(true);
+      const inside = path.join(home, "wavesmith-songs");
       fs.mkdirSync(inside);
       fs.writeFileSync(path.join(inside, "setup-progress.json"), installerProgress());
       const insideIo = fakeIo();
@@ -875,6 +894,7 @@ describe("uninstall leftovers", () => {
       "Users/ada/Wavesmith/engine/ACE-Step-1.5/checkpoints",
       "Users/ada/Library/Application Support/Wavesmith",
       "Users/ada/Music/Custom",
+      "Users/ada/wavesmith-songs",
     ];
     for (const rel of layout) fs.mkdirSync(path.join(fakeRoot, rel), { recursive: true });
     const io = fakeDeleteIO(fakeRoot);
@@ -916,7 +936,10 @@ describe("uninstall leftovers", () => {
       const custom = `${home}/Music/Custom`;
       expect(classifyDelete(custom, { ...ctx, env: { DATA_DIR: custom } }).ok).toBe(false);
       writeFakeMarker(fakeRoot, custom);
-      expect(classifyDelete(custom, { ...ctx, env: { DATA_DIR: custom } }).ok).toBe(true);
+      expect(classifyDelete(custom, { ...ctx, env: { DATA_DIR: custom } }).ok).toBe(false);
+      const named = `${home}/wavesmith-songs`;
+      writeFakeMarker(fakeRoot, named);
+      expect(classifyDelete(named, { ...ctx, env: { DATA_DIR: named } }).ok).toBe(true);
       expect(classifyDelete(install, ctx).ok).toBe(false);
       expect(fs.existsSync("/usr/local/setup-progress.json")).toBe(false);
       expect(fs.existsSync("/opt/homebrew")).toBe(false);
@@ -957,6 +980,157 @@ describe("uninstall leftovers", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("refuses a forged marker on standard home folders", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-home-"));
+    const root = path.join(home, "Wavesmith");
+    fs.mkdirSync(root);
+    const folders = [
+      "Library",
+      "Documents",
+      "Desktop",
+      "Downloads",
+      "Music",
+      "Movies",
+      "Pictures",
+      "Public",
+      "Applications",
+      ".ssh",
+      ".gnupg",
+      ".config",
+      ".local",
+      ".cache",
+      "iCloud Drive",
+      "Library/Application Support",
+      "Library/Mobile Documents",
+      "Library/Mobile Documents/com~apple~CloudDocs",
+    ];
+    try {
+      for (const rel of folders) {
+        const dir = path.join(home, rel);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, "setup-progress.json"), installerProgress());
+        expect(hasWavesmithMarker(dir), rel).toBe(true);
+        for (const key of ["DATA_DIR", "ENGINE_DIR", "WAVESMITH_STATE_DIR"] as const) {
+          const flags = key === "DATA_DIR" ? ["--delete-data"] : key === "ENGINE_DIR" ? ["--delete-weights"] : [];
+          const io = fakeIo();
+          io.home = home;
+          io.root = root;
+          io.stateDir = path.join(home, "Library", "Application Support", "Wavesmith");
+          io.env = { ...io.env, [key]: dir };
+          expect(classifyDelete(dir, { home, root, env: { [key]: dir } }).ok, `${key}=${rel}`).toBe(false);
+          expect(await run(["uninstall", ...flags], io), `${key}=${rel}`).toBe(1);
+          expect(io.removed, `${key}=${rel}`).not.toContain(dir);
+          expect(fs.existsSync(dir), rel).toBe(true);
+        }
+      }
+      const app = path.join(home, "Applications", "Wavesmith.app");
+      fs.mkdirSync(app);
+      expect(classifyDelete(app, { home, root, env: {} }).ok).toBe(true);
+      const state = path.join(home, ".local", "state", "wavesmith");
+      fs.mkdirSync(state, { recursive: true });
+      expect(classifyDelete(state, { home, root, env: {} }).ok).toBe(true);
+      const nested = path.join(home, "Music", "Wavesmith");
+      fs.mkdirSync(nested);
+      fs.writeFileSync(path.join(nested, "setup-progress.json"), installerProgress());
+      expect(classifyDelete(nested, { home, root, env: { DATA_DIR: nested } }).ok).toBe(true);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses uninstall when the checkout is home or contains home", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-checkout-"));
+    const data = path.join(home, "data");
+    fs.mkdirSync(data);
+    fs.writeFileSync(path.join(data, "songs.txt"), "keep\n");
+    try {
+      expect(checkoutBlocksUninstall(home, home)).toBe(true);
+      const same = fakeIo();
+      same.home = home;
+      same.root = home;
+      same.stateDir = path.join(home, ".local", "state", "wavesmith");
+      expect(await run(["uninstall", "--delete-data"], same)).toBe(1);
+      expect(same.removed).toEqual([]);
+      expect(same.err).toMatch(/home folder/);
+      expect(fs.existsSync(data)).toBe(true);
+      expect(classifyDelete(data, { home, root: home, env: {} }).ok).toBe(false);
+
+      const parent = path.dirname(home);
+      expect(checkoutBlocksUninstall(home, parent)).toBe(true);
+      const above = fakeIo();
+      above.home = home;
+      above.root = parent;
+      above.stateDir = path.join(home, ".local", "state", "wavesmith");
+      expect(await run(["uninstall", "--delete-data", "--delete-weights"], above)).toBe(1);
+      expect(above.removed).toEqual([]);
+      expect(fs.existsSync(home)).toBe(true);
+      expect(fs.existsSync(data)).toBe(true);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("unlinks a known Wavesmith symlink and leaves the target", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-link-"));
+    const root = path.join(home, "Wavesmith");
+    const secrets = path.join(home, ".ssh");
+    const realState = path.join(home, "real-state");
+    const xdgLink = path.join(home, "xdg-link");
+    fs.mkdirSync(root);
+    fs.mkdirSync(secrets);
+    fs.writeFileSync(path.join(secrets, "keep"), "secret\n");
+    fs.mkdirSync(path.join(realState, "wavesmith"), { recursive: true });
+    fs.writeFileSync(path.join(realState, "wavesmith", "keep"), "state\n");
+    fs.symlinkSync(realState, xdgLink);
+    const stateLink = path.join(home, ".local", "state", "wavesmith");
+    fs.mkdirSync(path.dirname(stateLink), { recursive: true });
+    fs.symlinkSync(secrets, stateLink);
+    const env = { XDG_STATE_HOME: xdgLink };
+    const inspect = {
+      realpath: (target: string) => fs.realpathSync(target),
+      isSymlink: (target: string) => fs.lstatSync(target).isSymbolicLink(),
+    };
+    try {
+      const shown = planUninstall({
+        root,
+        home,
+        stateDir: path.join(xdgLink, "wavesmith"),
+        deleteData: false,
+        deleteWeights: false,
+        dataDir: path.join(root, "data"),
+        engineDir: path.join(root, "engine", "ACE-Step-1.5"),
+        inspect,
+      });
+      expect(shown.remove).toContain(path.join(realState, "wavesmith"));
+      expect(shown.remove).not.toContain(secrets);
+      const linked = planUninstall({
+        root,
+        home,
+        stateDir: stateLink,
+        deleteData: false,
+        deleteWeights: false,
+        dataDir: path.join(root, "data"),
+        engineDir: path.join(root, "engine", "ACE-Step-1.5"),
+        inspect,
+      });
+      expect(linked.remove).not.toContain(secrets);
+      expect(linked.remove).not.toContain(stateLink);
+      expect(linked.unlink.map((item) => item.link)).toContain(stateLink);
+      expect(linked.unlink.find((item) => item.link === stateLink)?.target).toBe(fs.realpathSync(secrets));
+      expect(linked.notes.join("\n")).toMatch(/which stays/);
+
+      const verdict = classifyDelete(stateLink, { home, root, env });
+      expect(verdict.unlinkOnly).toBe(true);
+      expect(classifyDelete(secrets, { home, root, env }).ok).toBe(false);
+      commitDelete(stateLink, verdict);
+      expect(fs.existsSync(stateLink)).toBe(false);
+      expect(fs.existsSync(path.join(secrets, "keep"))).toBe(true);
+      expect(fs.existsSync(path.join(realState, "wavesmith", "keep"))).toBe(true);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 function writeFakeMarker(fakeRoot: string, virtualDir: string): void {
@@ -981,6 +1155,9 @@ function fakeDeleteIO(fakeRoot: string): DeleteIO {
   return {
     realpathSync(target: string) {
       return toVirtual(fs.realpathSync(toHost(target)));
+    },
+    lstatSync(target: string) {
+      return fs.lstatSync(toHost(target));
     },
     statSync(target: string) {
       return fs.statSync(toHost(target));

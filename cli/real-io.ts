@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { readProcessIdentity } from "./identity.ts";
 import type { CliIo } from "./io.ts";
 import { lockDir, releaseLock, takeStartLock } from "./lock.ts";
-import { classifyDelete, deleteClassifyEnv } from "./uninstall-guard.ts";
+import { classifyDelete, commitDelete, deleteClassifyEnv } from "./uninstall-guard.ts";
 import { addressesOnPort, parseLsof, parseProcNet } from "./ports.ts";
 import { homeDir, repoRoot, stateDirectory } from "./paths.ts";
 import { supervise } from "./supervise.ts";
@@ -56,11 +56,11 @@ export function realIo(): CliIo {
         root,
         env: deleteClassifyEnv({ root, stateDir, env: process.env, envText }),
       });
-      if (!verdict.ok) {
+      if (!verdict.ok && !verdict.unlinkOnly) {
         process.stderr.write(`${verdict.message}\n`);
         return;
       }
-      fs.rmSync(file, { recursive: true, force: true });
+      commitDelete(file, verdict);
     },
     exists(file) {
       return fs.existsSync(file);
