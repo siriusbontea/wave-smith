@@ -30,7 +30,17 @@ export async function GET(req: Request) {
 
 const PostSchema = z
   .object({
-    action: z.enum(["enable", "disable", "rotate", "revoke", "revoke-all", "rename", "lan-on", "lan-off"]),
+    action: z.enum([
+      "enable",
+      "disable",
+      "rotate",
+      "revoke",
+      "revoke-all",
+      "rename",
+      "lan-on",
+      "lan-off",
+      "recheck",
+    ]),
     deviceId: z.string().min(1).max(80).optional(),
     name: z.string().min(1).max(40).optional(),
   })
@@ -71,6 +81,8 @@ export async function POST(req: Request) {
     await syncPhoneGateway();
   } else if (action === "lan-off") {
     setLanOptIn(false);
+    await syncPhoneGateway();
+  } else if (action === "recheck") {
     await syncPhoneGateway();
   } else if (action === "rename") {
     if (!deviceId || !name || !renameDevice(deviceId, name)) {

@@ -6,7 +6,8 @@
  * turned on for this run. It proxies to the app after pairing and nowhere else.
  */
 import http from "node:http";
-import { GATEWAY_SECRET_HEADER, WAVESMITH_REQUEST_HEADER } from "@/lib/phone/headers";
+import { isJsonMediaType, originMatchesHost } from "@/lib/phone/access";
+import { GATEWAY_SECRET_HEADER, INSTANCE_PROBE_HEADER, WAVESMITH_REQUEST_HEADER } from "@/lib/phone/headers";
 import { assertLoopbackBaseUrl, isLoopbackHost, normalizeIp } from "@/lib/phone/loopback";
 import { lanOptIn, localTailscaleAddresses, planPhoneBind, type BindPlan } from "@/lib/phone/bind";
 import { deviceCookie, deviceLabel, PHONE_COOKIE, readCookie } from "@/lib/phone/codes";
@@ -127,6 +128,7 @@ async function verifyUpstream(port: number): Promise<{ ok: true } | { ok: false;
     const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
       headers: {
         [GATEWAY_SECRET_HEADER]: gatewaySecret(),
+        [INSTANCE_PROBE_HEADER]: "1",
         host: `127.0.0.1:${port}`,
       },
       signal: AbortSignal.timeout(2000),
@@ -221,12 +223,29 @@ export function gatewayHostAllowed(req: http.IncomingMessage, bindHost: string):
 
 function originAllowed(req: http.IncomingMessage): boolean {
   const origin = req.headers.origin;
-  if (!origin || Array.isArray(origin)) return false;
-  try {
-    return normalizeIp(new URL(origin).hostname) === normalizeIp(headerHost(req));
-  } catch {
-    return false;
-  }
+  const host = req.headers.host;
+  if (!origin || Array.isArray(origin) || Array.isArray(host)) return false;
+  return originMatchesHost(origin, host ?? null);
+}
+
+let pairTail: Promise<void> = Promise.resolve();
+let pairPending = 0;
+const PAIR_PENDING_LIMIT = 8;
+
+/** One wrong-code check at a time, so parallel guesses cannot skip the wait. */
+function enqueuePair(task: () => Promise<void>): Promise<void> {
+  const run = pairTail.then(task, task);
+  pairTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+export function resetPairThrottle(): void {
+  failures.clear();
+  pairPending = 0;
+  pairTail = Promise.resolve();
 }
 
 function pruneFailures(now: number): void {
@@ -301,15 +320,14 @@ async function handleGatewayRequest(
     }
     if (method !== "DELETE") {
       const contentType = String(req.headers["content-type"] ?? "");
-      if (!contentType.toLowerCase().startsWith("application/json")) {
+      if (!isJsonMediaType(contentType)) {
         sendJson(res, 403, { error: "Use the Wavesmith page on this phone." });
         return;
       }
     }
   }
   const refresh = touchDevice(token, clientAddress(req));
-  const secure = req.headers["x-forwarded-proto"] === "https";
-  proxyToApp(req, res, opts.upstreamPort, refresh && token ? deviceCookie(token, secure) : null);
+  proxyToApp(req, res, opts.upstreamPort, refresh && token ? deviceCookie(token, false) : null);
 }
 
 async function handlePair(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
@@ -322,39 +340,49 @@ async function handlePair(req: http.IncomingMessage, res: http.ServerResponse, u
     sendHtml(res, 403, pairPage({ message: "Open this page from the address on the computer.", code: "" }));
     return;
   }
+  if (pairPending >= PAIR_PENDING_LIMIT) {
+    sendHtml(res, 429, pairPage({ message: "Too many tries at once. Wait a moment and try again.", code: "" }));
+    return;
+  }
+  pairPending += 1;
   const code = (await readFormCode(req)) ?? "";
-  if (!code.trim()) {
-    sendHtml(res, 200, pairPage({ message: null, code: "" }));
-    return;
-  }
-  const redeemed = redeemInvite({
-    code,
-    label: deviceLabel(headerString(req.headers["user-agent"])),
-    address,
-    userAgent: headerString(req.headers["user-agent"]) ?? "",
-  });
-  if (!redeemed) {
-    noteFailure(address);
-    const wait = wrongCodeDelay(address);
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-    sendHtml(
-      res,
-      403,
-      pairPage({
-        message: "That code doesn't match. Check the computer and try again in a moment.",
+  try {
+    await enqueuePair(async () => {
+      if (!code.trim()) {
+        sendHtml(res, 200, pairPage({ message: null, code: "" }));
+        return;
+      }
+      const redeemed = redeemInvite({
         code,
-      }),
-    );
-    return;
+        label: deviceLabel(headerString(req.headers["user-agent"])),
+        address,
+        userAgent: headerString(req.headers["user-agent"]) ?? "",
+      });
+      if (!redeemed) {
+        noteFailure(address);
+        const wait = wrongCodeDelay(address);
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        sendHtml(
+          res,
+          403,
+          pairPage({
+            message: "That code doesn't match. Check the computer and try again in a moment.",
+            code,
+          }),
+        );
+        return;
+      }
+      failures.delete(address);
+      res.writeHead(302, {
+        Location: "/",
+        "Set-Cookie": deviceCookie(redeemed.token, false),
+        "Cache-Control": "no-store",
+      });
+      res.end();
+    });
+  } finally {
+    pairPending -= 1;
   }
-  failures.delete(address);
-  const secure = req.headers["x-forwarded-proto"] === "https";
-  res.writeHead(302, {
-    Location: "/",
-    "Set-Cookie": deviceCookie(redeemed.token, secure),
-    "Cache-Control": "no-store",
-  });
-  res.end();
 }
 
 function headerString(value: string | string[] | undefined): string | undefined {
@@ -391,7 +419,7 @@ function proxyToApp(
   const headers: http.OutgoingHttpHeaders = {};
   for (const [key, value] of Object.entries(req.headers)) {
     if (HOP_BY_HOP.has(key) || key.startsWith("x-forwarded-")) continue;
-    if (key === GATEWAY_SECRET_HEADER || key === "x-wavesmith-client") continue;
+    if (key === GATEWAY_SECRET_HEADER || key === "x-wavesmith-client" || key === INSTANCE_PROBE_HEADER) continue;
     headers[key] = value;
   }
   if (typeof headers.cookie === "string") {
@@ -406,7 +434,8 @@ function proxyToApp(
   headers.host = `127.0.0.1:${upstreamPort}`;
   headers["x-forwarded-for"] = clientAddress(req);
   headers["x-forwarded-host"] = headerHost(req);
-  headers["x-forwarded-proto"] = req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+  // The phone door is plain HTTP. A client X-Forwarded-Proto is not how we were reached.
+  headers["x-forwarded-proto"] = "http";
   const upstream = http.request(
     {
       hostname: "127.0.0.1",
@@ -419,6 +448,7 @@ function proxyToApp(
       const out: http.OutgoingHttpHeaders = { ...up.headers };
       delete out["transfer-encoding"];
       delete out.connection;
+      delete out["x-wavesmith-instance"];
       if (refreshCookie) {
         const existing = out["set-cookie"];
         if (!existing) out["set-cookie"] = refreshCookie;

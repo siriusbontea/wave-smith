@@ -30,6 +30,7 @@ import {
   type ForgeParams,
   type LyricsResult,
 } from "@/lib/client/api";
+import { reportActionError } from "@/lib/client/report-error";
 import { useHeldSubmit } from "@/lib/client/use-held-submit";
 import { VOCAL_LANGUAGES, VOCAL_LANGUAGE_LABELS, type VocalLanguage } from "@/lib/lyrics/language";
 
@@ -119,7 +120,7 @@ export function CreateForm() {
           : "Track progress in the queue below. Audio stays on this computer.",
       });
     },
-    onError: (err) => toast.error("Couldn't start the forge", { description: err.message }),
+    onError: (err) => reportActionError("Couldn't start the forge", err),
   });
 
   const lyricsMutation = useMutation({
@@ -218,7 +219,7 @@ export function CreateForm() {
       event.preventDefault();
       void held
         .run("forge", (key) => forgeMutation.mutateAsync({ ...buildParams(), idempotencyKey: key }))
-        .catch(() => undefined);
+        .catch((err) => reportActionError("Couldn't start the forge", err));
     }
   }
 
@@ -514,8 +515,8 @@ export function CreateForm() {
         disabled={!canForge}
         onClick={() => {
           void held
-        .run("forge", (key) => forgeMutation.mutateAsync({ ...buildParams(), idempotencyKey: key }))
-        .catch(() => undefined);
+            .run("forge", (key) => forgeMutation.mutateAsync({ ...buildParams(), idempotencyKey: key }))
+            .catch((err) => reportActionError("Couldn't start the forge", err));
         }}
       >
         {forgeMutation.isPending ? "Starting…" : "Forge"}

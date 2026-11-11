@@ -4,9 +4,7 @@ The computer makes the music. The phone just opens the page. This is off until y
 
 The safe way is Tailscale. The phone and the computer join a private network that encrypts the traffic. Home Wi-Fi is a separate choice, and it is not the default.
 
-The Wavesmith app stays on `127.0.0.1:3000`. The music engine stays on `127.0.0.1:8001`. Ollama, if you use it, stays on `127.0.0.1:11434`. None of those open onto the network. `pnpm dev` and `pnpm start` bind the app to `127.0.0.1` too, same as `./scripts/dev.sh` and `./scripts/start.sh`.
-
-While phone access is on, Wavesmith also listens on port **8787** (`PHONE_PORT`). By default that listen is only the computer's Tailscale address (`100.x.y.z`, or the Tailscale IPv6 address starting with `fd7a:115c:a1e0:`). If Tailscale is not running, the door stays closed and Settings says so.
+If Tailscale is not signed in, Settings says so and the door stays closed. Open the Tailscale app and sign in. Settings checks again on its own. You can also tap **Check again**. Do not turn phone access off to retry. Turn off forgets every paired phone.
 
 ## On the computer and the phone
 
@@ -20,8 +18,6 @@ While phone access is on, Wavesmith also listens on port **8787** (`PHONE_PORT`)
 A code works for **10 minutes**, then a new one shows up. **New code** throws the current one away. After a phone pairs, a new code stays on screen so you can pair another phone.
 
 If the phone sleeps, the computer keeps working. Open Wavesmith again and the queue is up to date.
-
-This works with `./scripts/dev.sh` and with `./scripts/start.sh`.
 
 ## Turn off, Remove, and Remove all
 
@@ -48,12 +44,18 @@ That choice lasts until you quit Wavesmith. A restart does **not** turn Wi-Fi mo
 
 ## Do not publish this
 
-Do not forward port 8787 or port 3000 on your router.
+Open the address Settings shows. It starts with `100.`. Pairing still applies there.
 
-Do not run **Tailscale Funnel**. Funnel puts the page on the public internet.
-
-Do not point `tailscale serve` at port **3000**. That skips pairing, because it reaches the app itself. Wavesmith refuses requests that look like a proxy in front of port 3000. If you use `tailscale serve`, point it at port **8787** (the phone door). Pairing still applies there. Do not use Funnel.
+Do not use **Tailscale Serve** or **Tailscale Funnel**. Do not forward the Wavesmith page or the phone door. That includes a router setting, Serve, Funnel, ssh, and socat.
 
 ## Wrong codes
 
-A wrong code waits a short moment, then you can try again. The wait does not keep growing forever, and the **right** code still works during the wait. The message tells you to check the code on the computer. It does not tell you to scan a new one, because a new code would not skip the wait. If `tailscale serve` sits in front of port 8787, every phone looks like the same address, so they share that short wait. The right code still works.
+A wrong code waits a short moment, then you can try again. The wait does not keep growing forever, and the **right** code still works during the wait. The message tells you to check the code on the computer. It does not tell you to scan a new one, because a new code would not skip the wait.
+
+## For developers
+
+The Wavesmith app stays on `127.0.0.1:3000`. The music engine stays on `127.0.0.1:8001`. Ollama, if you use it, stays on `127.0.0.1:11434`. None of those open onto the network. `pnpm dev` and `pnpm start` bind the app to `127.0.0.1`, same as `./scripts/dev.sh` and `./scripts/start.sh`.
+
+While phone access is on, the phone door uses port **8787** (`PHONE_PORT`). It listens only on an address Tailscale reports (`tailscale ip -4` and `-6`, including the Mac app at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`) or on an interface named `tailscale0`. That address is often `100.x.y.z`, or an IPv6 address starting with `fd7a:115c:a1e0:`. A `100.x` address from the home network or another VPN is not enough, and the door stays closed.
+
+Do not put Tailscale Serve or Funnel in front of port 3000 or port 8787. Serve cannot reach a door that is not on `127.0.0.1`, and a `*.ts.net` Host is refused. Use the `100.x` address Settings shows.

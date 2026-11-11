@@ -17,3 +17,6 @@ export const VIA_PROXY_HEADER = "x-wavesmith-via-proxy";
  * cannot set it, so a page on another site cannot click Turn on for you.
  */
 export const WAVESMITH_REQUEST_HEADER = "x-wavesmith-request";
+
+/** Set only by the gateway's own health check. A phone request never carries it. */
+export const INSTANCE_PROBE_HEADER = "x-wavesmith-probe";

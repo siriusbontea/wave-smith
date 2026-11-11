@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PhoneAccess } from "@/components/settings/phone-access";
 import { forge, withWavesmithHeaders } from "@/lib/client/api";
+import { reportActionError } from "@/lib/client/report-error";
 import { useHeldSubmit } from "@/lib/client/use-held-submit";
 
 interface SettingsResponse {
@@ -105,12 +106,14 @@ export function SettingsView() {
       void queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast.success(result.merged ? "Already started" : "Test generation queued — watch the queue on Create.");
     },
-    onError: (err) => toast.error("Test forge failed", { description: err.message }),
+    onError: (err) => reportActionError("Test forge failed", err),
   });
 
   if (isLoading || !data) {
     return <p className="py-16 text-center text-muted-foreground">Loading settings…</p>;
   }
+
+  const onPhone = data.client === "phone";
 
   return (
     <div className="flex flex-col gap-8" data-testid="settings-page">
@@ -154,17 +157,23 @@ export function SettingsView() {
             Demo mode is on. Songs are a sample clip, not music this computer generated.
           </p>
         ) : null}
-        <Button
-          className="mt-4"
-          variant="outline"
-          data-testid="test-generation"
-          onClick={() => {
-            void held.run("test", (key) => testForge.mutateAsync(key)).catch(() => undefined);
-          }}
-          disabled={testForge.isPending || held.busy}
-        >
-          Run test generation
-        </Button>
+        {onPhone ? (
+          <p className="mt-3 text-sm text-muted-foreground">Change this on the computer.</p>
+        ) : (
+          <Button
+            className="mt-4"
+            variant="outline"
+            data-testid="test-generation"
+            onClick={() => {
+              void held
+                .run("test", (key) => testForge.mutateAsync(key))
+                .catch((err) => reportActionError("Test forge failed", err));
+            }}
+            disabled={testForge.isPending || held.busy}
+          >
+            Run test generation
+          </Button>
+        )}
       </section>
 
       <section className="rounded-xl border bg-card p-4" data-testid="connection-settings">
@@ -173,6 +182,13 @@ export function SettingsView() {
           Local only is the default and works with no network and no key. Grok hybrid can draft
           lyrics and a tempo, key, and structure. The song itself is still forged here.
         </p>
+        {onPhone ? (
+          <p className="mt-4 text-sm text-muted-foreground">
+            Change this on the computer. Mode is{" "}
+            {data.connection?.mode === "grok" ? "Grok hybrid" : "local only"}. Lyrics are{" "}
+            {data.connection?.lyricsPolicy === "unrestricted" ? "unrestricted" : "standard"}.
+          </p>
+        ) : (
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div className="grid gap-1.5">
             <Label htmlFor="connection-mode">Mode</Label>
@@ -205,6 +221,7 @@ export function SettingsView() {
             </Select>
           </div>
         </div>
+        )}
         {data.connection?.lyricsPolicy === "unrestricted" ? (
           <p className="mt-3 text-sm text-muted-foreground" role="status">
             Unrestricted keeps Grok out of the path, even if hybrid is selected. Your lyrics go to
@@ -275,6 +292,9 @@ export function SettingsView() {
 
       <section className="rounded-xl border bg-card p-4">
         <h2 className="font-medium">Appearance</h2>
+        {onPhone ? (
+          <p className="mt-3 text-sm text-muted-foreground">Change this on the computer.</p>
+        ) : (
         <div className="mt-3 flex items-center gap-3">
           <Label htmlFor="theme">Theme</Label>
           <Select
@@ -294,6 +314,7 @@ export function SettingsView() {
             </SelectContent>
           </Select>
         </div>
+        )}
       </section>
 
       <section className="rounded-xl border bg-card p-4">

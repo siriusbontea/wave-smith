@@ -9,7 +9,14 @@ import http from "node:http";
 import { PEER_HEADER, VIA_PROXY_HEADER } from "./headers";
 import { isLoopbackHost, normalizeIp } from "./loopback";
 
-let installed = false;
+const STAMPED = Symbol.for("wavesmith.peerStamped");
+const ORIGINAL_FORWARDED_FOR = Symbol.for("wavesmith.originalForwardedFor");
+const INSTALLED = Symbol.for("wavesmith.peerStampInstalled");
+
+type StampedMessage = http.IncomingMessage & {
+  [STAMPED]?: boolean;
+  [ORIGINAL_FORWARDED_FOR]?: string;
+};
 
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
@@ -17,8 +24,12 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 }
 
 export function stampPeer(req: http.IncomingMessage): void {
+  const marked = req as StampedMessage;
+  if (marked[STAMPED]) return;
+  marked[STAMPED] = true;
   const peer = req.socket?.remoteAddress ?? "";
   const forwarded = headerValue(req.headers["x-forwarded-for"]);
+  marked[ORIGINAL_FORWARDED_FOR] = forwarded ?? "";
   const firstForwarded = forwarded?.split(",")[0]?.trim() ?? "";
   const tailscaleUser =
     headerValue(req.headers["tailscale-user-login"]) || headerValue(req.headers["tailscale-user-name"]);
@@ -34,8 +45,9 @@ export function stampPeer(req: http.IncomingMessage): void {
 }
 
 export function installPeerStamp(): void {
-  if (installed) return;
-  installed = true;
+  const proto = http.Server.prototype as typeof http.Server.prototype & { [INSTALLED]?: boolean };
+  if (proto[INSTALLED]) return;
+  proto[INSTALLED] = true;
   const original = http.Server.prototype.emit;
   http.Server.prototype.emit = function (this: http.Server, event: string, ...args: unknown[]) {
     if ((event === "request" || event === "upgrade") && args[0] && typeof args[0] === "object") {

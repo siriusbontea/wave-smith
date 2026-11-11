@@ -174,6 +174,19 @@ export function PhoneAccess() {
           {data.error}
         </p>
       ) : null}
+      {data.enabled && !data.listening ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-3"
+          data-testid="phone-recheck"
+          disabled={mutation.isPending}
+          onClick={() => mutation.mutate({ action: "recheck" })}
+        >
+          Check again
+        </Button>
+      ) : null}
       {on && data.invite ? (
         <div className="mt-4">
           <p className="text-sm">On the phone, open the camera and scan this code. Then tap Pair.</p>

@@ -183,7 +183,7 @@ The computer still makes the music. Tailscale is how a phone opens Wavesmith. It
 
 The code lasts 10 minutes. The header shows **Phone on** only while the door is actually open. If Tailscale is not signed in, Settings says so and nothing listens. If the phone sleeps, the queue keeps going on the computer.
 
-Home Wi-Fi is an extra switch in Settings. It is plain HTTP, and it does not come back after a restart. Do not put this on the public internet, and do not use Tailscale Funnel. Steps and the exact rules are in [docs/PHONE.md](docs/PHONE.md).
+Home Wi-Fi is an extra switch in Settings. It is plain HTTP, and it does not come back after a restart. Open the address Settings shows. Do not use Tailscale Serve or Funnel, and do not forward the page. Steps and the exact rules are in [docs/PHONE.md](docs/PHONE.md).
 
 ![Settings when Tailscale is not running: the phone door stays closed](docs/screenshots/phone-pair-mac.png)
 

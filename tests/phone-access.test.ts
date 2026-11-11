@@ -13,15 +13,16 @@ import { db, schema } from "@/lib/db";
 import { AceStepClient } from "@/lib/engine/acestep";
 import { getConnectionMode, setConnectionMode } from "@/lib/grok/mode";
 import { readGrokApiKey, saveGrokApiKey } from "@/lib/grok/secrets";
-import { authorizeWrite, classifyRequest } from "@/lib/phone/access";
-import { beginPhoneProcess, isTailscaleIPv4, isTailscaleIPv6, lanDisplayAddresses, lanOptIn, planPhoneBind, setLanOptIn } from "@/lib/phone/bind";
+import { authorizeWrite, classifyRequest, isJsonMediaType } from "@/lib/phone/access";
+import { beginPhoneProcess, confirmedTailscaleAddresses, isTailscaleIPv4, isTailscaleIPv6, lanDisplayAddresses, lanOptIn, planPhoneBind, setLanOptIn } from "@/lib/phone/bind";
 import { DEVICE_COOKIE_MAX_AGE, deviceCookie } from "@/lib/phone/codes";
 import { devOriginAllowed } from "@/lib/phone/dev-origins";
-import { gatewayHostAllowed, phoneGatewayError, phoneGatewayListening, startPhoneGateway, stopPhoneGateway, syncPhoneGateway } from "@/lib/phone/gateway";
+import { gatewayHostAllowed, phoneGatewayError, phoneGatewayListening, resetPairThrottle, startPhoneGateway, stopPhoneGateway, syncPhoneGateway } from "@/lib/phone/gateway";
 import { GATEWAY_SECRET_HEADER, PEER_HEADER, WAVESMITH_REQUEST_HEADER } from "@/lib/phone/headers";
 import { gatewayStartAllowed } from "@/lib/phone/listen";
 import { assertLoopbackBaseUrl } from "@/lib/phone/loopback";
-import { installPeerStamp, peerIsLoopback } from "@/lib/phone/peer-stamp";
+import { mintId } from "@/lib/client/intent";
+import { installPeerStamp, peerIsLoopback, stampPeer } from "@/lib/phone/peer-stamp";
 import { gatewaySecret } from "@/lib/phone/secret";
 import {
   currentInvite,
@@ -39,6 +40,7 @@ const servers: http.Server[] = [];
 afterEach(async () => {
   setLanOptIn(false);
   setPhoneAccessEnabled(false);
+  resetPairThrottle();
   stopPhoneGateway();
   await Promise.all(
     servers.splice(0).map(
@@ -166,6 +168,21 @@ describe("who is calling", () => {
     });
     expect(authorizeWrite(foreign, "mac").ok).toBe(false);
     expect((await phonePOST(foreign)).status).toBe(403);
+
+    const wrongPort = macRequest("http://127.0.0.1:3000/api/phone", {
+      method: "POST",
+      headers: { origin: "http://127.0.0.1:9999" },
+      body: JSON.stringify({ action: "enable" }),
+    });
+    expect(authorizeWrite(wrongPort, "mac").ok).toBe(false);
+    expect(isJsonMediaType("application/json; charset=utf-8")).toBe(true);
+    expect(isJsonMediaType("application/jsonx")).toBe(false);
+    const fakeJson = macRequest("http://127.0.0.1:3000/api/phone", {
+      method: "POST",
+      headers: { "content-type": "application/jsonx" },
+      body: JSON.stringify({ action: "enable" }),
+    });
+    expect(authorizeWrite(fakeJson, "mac").ok).toBe(false);
   });
 });
 
@@ -178,6 +195,31 @@ describe("bind target", () => {
     expect(isTailscaleIPv4("100.64.1.2")).toBe(true);
     expect(isTailscaleIPv4("100.128.1.1")).toBe(false);
     expect(isTailscaleIPv6("fd7a:115c:a1e0::8")).toBe(true);
+    expect(
+      confirmedTailscaleAddresses({
+        reported: [],
+        interfaces: [
+          { name: "en0", address: "100.64.12.7" },
+          { name: "CloudflareWARP", address: "100.96.0.5" },
+          { name: "utun4", address: "100.64.1.2" },
+        ],
+      }),
+    ).toEqual([]);
+    expect(
+      confirmedTailscaleAddresses({
+        reported: ["100.64.1.2"],
+        interfaces: [
+          { name: "en0", address: "100.64.12.7" },
+          { name: "utun4", address: "100.64.1.2" },
+        ],
+      }),
+    ).toEqual(["100.64.1.2"]);
+    expect(
+      confirmedTailscaleAddresses({
+        reported: [],
+        interfaces: [{ name: "tailscale0", address: "100.64.8.8" }],
+      }),
+    ).toEqual(["100.64.8.8"]);
 
     const present = planPhoneBind({
       enabled: true,
@@ -345,12 +387,14 @@ describe("phone gateway", () => {
     let seenRange = "";
     let seenForwarded = "";
     let seenProxy = "";
+    let seenProto = "";
     const app = http.createServer((req, res) => {
       seenHost = String(req.headers.host);
       seenClient = String(req.headers["x-wavesmith-client"]);
       seenRange = String(req.headers.range);
       seenForwarded = String(req.headers["x-forwarded-host"]);
       seenProxy = String(req.headers["proxy-authorization"] ?? "");
+      seenProto = String(req.headers["x-forwarded-proto"] ?? "");
       res.writeHead(206, {
         "Content-Type": "audio/mpeg",
         "Content-Range": "bytes 0-3/10",
@@ -382,12 +426,17 @@ describe("phone gateway", () => {
     const paired = await fetch(`${origin}/pair`, {
       method: "POST",
       redirect: "manual",
-      headers: { "content-type": "application/x-www-form-urlencoded", origin },
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin,
+        "x-forwarded-proto": "https",
+      },
       body: pairBody(invite.code),
     });
     expect(paired.status).toBe(302);
     const cookie = paired.headers.get("set-cookie") ?? "";
     expect(cookie).toContain("ws_device=");
+    expect(cookie).not.toContain("Secure");
     expect(cookie).toContain(`Max-Age=${DEVICE_COOKIE_MAX_AGE}`);
     const token = cookie.split(";")[0]?.split("=")[1] ?? "";
     const device = deviceForToken(decodeURIComponent(token));
@@ -414,7 +463,11 @@ describe("phone gateway", () => {
     expect(forged.status).toBe(403);
 
     const audio = await fetch(`${origin}/api/audio/demo.mp3`, {
-      headers: { cookie: cookie.split(";")[0] ?? "", Range: "bytes=0-3" },
+      headers: {
+        cookie: cookie.split(";")[0] ?? "",
+        Range: "bytes=0-3",
+        "x-forwarded-proto": "https",
+      },
     });
     expect(audio.status).toBe(206);
     expect(await audio.text()).toBe("abcd");
@@ -423,10 +476,34 @@ describe("phone gateway", () => {
     expect(seenRange).toBe("bytes=0-3");
     expect(seenForwarded).toBe("127.0.0.1");
     expect(seenProxy).toBe("");
+    expect(seenProto).toBe("http");
 
     revokeDevice(device!.id);
     const gone = await fetch(`${origin}/api/songs`, { headers: { cookie: cookie.split(";")[0] ?? "" } });
     expect(gone.status).toBe(401);
+  });
+
+  it("makes parallel wrong codes wait one after another", async () => {
+    rotateInvite();
+    const app = http.createServer((_req, res) => {
+      res.end("ok");
+    });
+    const appPort = await listen(app);
+    const gateway = await startPhoneGateway({ host: "127.0.0.1", port: 0, upstreamPort: appPort });
+    servers.push(gateway);
+    const port = (gateway.address() as AddressInfo).port;
+    const origin = `http://127.0.0.1:${port}`;
+    const started = Date.now();
+    const attempt = () =>
+      fetch(`${origin}/pair`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", origin },
+        body: pairBody("ZZZZ-ZZZZ"),
+      });
+    const [first, second] = await Promise.all([attempt(), attempt()]);
+    expect(first.status).toBe(403);
+    expect(second.status).toBe(403);
+    expect(Date.now() - started).toBeGreaterThan(700);
   });
 });
 
@@ -488,7 +565,13 @@ describe("dev origins and cookies", () => {
     expect(deviceCookie("abc")).not.toContain("Secure");
   });
 
-  it("stamps the real peer over a forged X-Forwarded-For", async () => {
+  it("mints a click key without crypto.randomUUID", () => {
+    const id = mintId();
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it("stamps the real peer over a forged X-Forwarded-For, and a second stamp keeps the flag", async () => {
+    installPeerStamp();
     installPeerStamp();
     const seen: { peer?: string; forwarded?: string; via?: string } = {};
     const app = http.createServer((req, res) => {
@@ -502,5 +585,14 @@ describe("dev origins and cookies", () => {
     expect(peerIsLoopback(seen.peer)).toBe(true);
     expect(seen.forwarded).not.toContain("1.2.3.4");
     expect(seen.via).toBe("1");
+
+    const twice = {
+      headers: { "x-forwarded-for": "100.101.1.2" },
+      socket: { remoteAddress: "127.0.0.1" },
+    } as unknown as http.IncomingMessage;
+    stampPeer(twice);
+    stampPeer(twice);
+    expect(twice.headers["x-wavesmith-via-proxy"]).toBe("1");
+    expect(twice.headers["x-forwarded-for"]).toBe("127.0.0.1");
   });
 });

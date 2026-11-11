@@ -10,6 +10,7 @@
 import { NextResponse } from "next/server";
 import { classifyRequest } from "@/lib/phone/access";
 import { phoneGatewayListening } from "@/lib/phone/gateway";
+import { INSTANCE_PROBE_HEADER } from "@/lib/phone/headers";
 import { instanceMark } from "@/lib/phone/secret";
 import { sql } from "drizzle-orm";
 import { getEngineClient } from "@/lib/engine";
@@ -101,7 +102,11 @@ export async function GET(req?: Request) {
     timestamp: Date.now(),
   };
   const res = NextResponse.json(body);
-  if (req && classifyRequest(req) === "phone") {
+  if (
+    req &&
+    req.headers.get(INSTANCE_PROBE_HEADER) === "1" &&
+    classifyRequest(req) === "phone"
+  ) {
     res.headers.set("x-wavesmith-instance", instanceMark());
   }
   return res;

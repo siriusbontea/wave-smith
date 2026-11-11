@@ -25,7 +25,6 @@ import {
   fetchSong,
   forgeMidi,
   forgeStems,
-  isAbortError,
   patchSong,
   type JobView,
   type MidiView,
@@ -33,6 +32,7 @@ import {
 } from "@/lib/client/api";
 import { NOTES_SETUP, PARTS_SETUP } from "@/lib/setup-hints";
 import { usePlayer } from "@/lib/audio/store";
+import { reportActionError } from "@/lib/client/report-error";
 import { useHeldSubmit } from "@/lib/client/use-held-submit";
 import { formatDate, formatTime } from "@/lib/format";
 
@@ -201,10 +201,7 @@ export function SongView({ id }: { id: string }) {
           : "This may take a few minutes. Playback can continue.",
       });
     },
-    onError: (err) => {
-      if (isAbortError(err)) return;
-      toast.error("Could not split the song", { description: err.message });
-    },
+    onError: (err) => reportActionError("Could not split the song", err),
   });
 
   const stemsJob = jobs?.find(
@@ -243,10 +240,7 @@ export function SongView({ id }: { id: string }) {
           : "This can take a minute. Playback can continue.",
       });
     },
-    onError: (err) => {
-      if (isAbortError(err)) return;
-      toast.error("Could not make the notes file", { description: err.message });
-    },
+    onError: (err) => reportActionError("Could not make the notes file", err),
   });
 
   const midiJob = jobs?.find(
@@ -451,7 +445,9 @@ export function SongView({ id }: { id: string }) {
             className="mt-4"
             data-testid="generate-stems"
             onClick={() => {
-              void held.run("stems", (key) => stemsMutation.mutateAsync(key)).catch(() => undefined);
+              void held
+                .run("stems", (key) => stemsMutation.mutateAsync(key))
+                .catch((err) => reportActionError("Could not split the song", err));
             }}
             disabled={stemsMutation.isPending || held.busy || !!stemsJob}
           >
@@ -520,7 +516,7 @@ export function SongView({ id }: { id: string }) {
                 .run(`notes-${midiSource}`, (key) =>
                   midiMutation.mutateAsync({ source: midiSource, idempotencyKey: key }),
                 )
-                .catch(() => undefined);
+                .catch((err) => reportActionError("Could not make the notes file", err));
             }}
             disabled={midiMutation.isPending || held.busy || !!midiJob}
           >

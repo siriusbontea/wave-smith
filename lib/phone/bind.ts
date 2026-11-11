@@ -69,34 +69,75 @@ export function planPhoneBind(input: {
       host: null,
       mode: "tailscale",
       reason:
-        "Tailscale isn't running on this computer, so the phone door stayed closed. Open the Tailscale app and sign in, then turn phone access off and on.",
+        "Tailscale isn't running on this computer, so the phone door stayed closed. Open the Tailscale app and sign in. This page checks again on its own.",
     };
   }
   return { listen: true, host: tailscale, mode: "tailscale", reason: null };
 }
 
-function interfaceAddresses(): string[] {
-  const found: string[] = [];
-  for (const entries of Object.values(os.networkInterfaces())) {
+export interface NamedInterface {
+  name: string;
+  address: string;
+}
+
+const TAILSCALE_BINS = ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
+
+function namedInterfaces(): NamedInterface[] {
+  const found: NamedInterface[] = [];
+  for (const [name, entries] of Object.entries(os.networkInterfaces())) {
     for (const entry of entries ?? []) {
       if (entry.internal || isLoopbackHost(entry.address)) continue;
-      found.push(entry.address.split("%")[0] ?? entry.address);
+      found.push({ name, address: entry.address.split("%")[0] ?? entry.address });
     }
   }
   return found;
 }
 
 function tailscaleCommandAddresses(): string[] {
-  try {
-    const out = execFileSync("tailscale", ["ip"], {
-      timeout: 1500,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return out.split(/\s+/).filter(Boolean);
-  } catch {
-    return [];
+  const found: string[] = [];
+  for (const bin of TAILSCALE_BINS) {
+    for (const flag of ["-4", "-6"]) {
+      try {
+        const out = execFileSync(bin, ["ip", flag], {
+          timeout: 1500,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        found.push(...out.split(/\s+/).filter(Boolean));
+      } catch {
+        // This binary is missing or Tailscale is signed out. Try the next one.
+      }
+    }
   }
+  return found;
+}
+
+function inTailscaleRange(address: string): boolean {
+  return isTailscaleIPv4(address) || isTailscaleIPv6(address);
+}
+
+/**
+ * Addresses Tailscale itself reports. A 100.64.0.0/10 address on Wi-Fi or
+ * another VPN is not enough. The CLI (`tailscale ip`, including the macOS
+ * app) must list it, or it must sit on an interface named tailscale0.
+ */
+export function confirmedTailscaleAddresses(input: {
+  reported: string[];
+  interfaces: NamedInterface[];
+}): string[] {
+  const local = input.interfaces.map((entry) => ({
+    name: entry.name,
+    address: normalizeIp(entry.address),
+  }));
+  const localSet = new Set(local.map((entry) => entry.address));
+  const fromCli = input.reported
+    .map(normalizeIp)
+    .filter((ip) => localSet.has(ip) && inTailscaleRange(ip));
+  const fromDevice = local
+    .filter((entry) => /^tailscale\d*$/i.test(entry.name))
+    .map((entry) => entry.address)
+    .filter(inTailscaleRange);
+  return [...new Set([...fromCli, ...fromDevice])];
 }
 
 let tailscaleCache: { at: number; ips: string[] } | null = null;
@@ -104,10 +145,10 @@ let tailscaleCache: { at: number; ips: string[] } | null = null;
 /** Tailscale addresses that are actually on this computer. Cached for a few seconds. */
 export function localTailscaleAddresses(): string[] {
   if (tailscaleCache && Date.now() - tailscaleCache.at < 5000) return tailscaleCache.ips;
-  const local = new Set(interfaceAddresses().map(normalizeIp));
-  const fromCommand = tailscaleCommandAddresses().map(normalizeIp).filter((ip) => local.has(ip));
-  const fromInterfaces = interfaceAddresses().filter((ip) => isTailscaleIPv4(ip) || isTailscaleIPv6(ip));
-  const ips = [...new Set([...fromCommand, ...fromInterfaces.map(normalizeIp)])];
+  const ips = confirmedTailscaleAddresses({
+    reported: tailscaleCommandAddresses(),
+    interfaces: namedInterfaces(),
+  });
   tailscaleCache = { at: Date.now(), ips };
   return ips;
 }

@@ -64,13 +64,42 @@ export function isPhoneClient(req: Request): boolean {
   return classifyRequest(req) === "phone";
 }
 
-function originHost(origin: string | null): string | null {
-  if (!origin) return null;
-  try {
-    return new URL(origin).hostname;
-  } catch {
-    return null;
+/** Media type only. `application/json; charset=utf-8` matches. `application/jsonx` does not. */
+export function isJsonMediaType(contentType: string | null | undefined): boolean {
+  const media = (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  return media === "application/json";
+}
+
+function splitHostHeader(hostHeader: string): { host: string; port: string } | null {
+  if (hostHeader.startsWith("[")) {
+    const end = hostHeader.indexOf("]");
+    if (end === -1) return null;
+    const rest = hostHeader.slice(end + 1);
+    const port = rest.startsWith(":") ? rest.slice(1) : "";
+    if (!/^\d+$/.test(port)) return null;
+    return { host: hostHeader.slice(1, end), port };
   }
+  const colon = hostHeader.lastIndexOf(":");
+  if (colon === -1) return null;
+  const port = hostHeader.slice(colon + 1);
+  if (!/^\d+$/.test(port)) return null;
+  return { host: hostHeader.slice(0, colon), port };
+}
+
+/** Scheme, hostname, and port. A different port is a different origin. */
+export function originMatchesHost(origin: string | null, hostHeader: string | null): boolean {
+  if (!origin || !hostHeader) return false;
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  const expected = splitHostHeader(hostHeader);
+  if (!expected) return false;
+  const originPort = url.port || (url.protocol === "https:" ? "443" : "80");
+  return normalizeIp(url.hostname) === normalizeIp(expected.host) && originPort === expected.port;
 }
 
 export function authorizeWrite(req: Request, kind: ClientKind): { ok: true } | { ok: false; status: number; error: string } {
@@ -92,18 +121,15 @@ export function authorizeWrite(req: Request, kind: ClientKind): { ok: true } | {
   const method = req.method.toUpperCase();
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return { ok: true };
 
-  const contentType = req.headers.get("content-type") ?? "";
-  if (method !== "DELETE" && !contentType.toLowerCase().startsWith("application/json")) {
+  const contentType = req.headers.get("content-type");
+  if (method !== "DELETE" && !isJsonMediaType(contentType)) {
     return { ok: false, status: 403, error: "Use the Wavesmith app. This request was refused." };
   }
   if (req.headers.get(WAVESMITH_REQUEST_HEADER) !== "1") {
     return { ok: false, status: 403, error: "Use the Wavesmith app. This request was refused." };
   }
-  if (kind === "mac") {
-    const host = originHost(req.headers.get("origin"));
-    if (!host || !isLoopbackHost(host)) {
-      return { ok: false, status: 403, error: "Use the Wavesmith app on this computer." };
-    }
+  if (kind === "mac" && !originMatchesHost(req.headers.get("origin"), requestHost(req))) {
+    return { ok: false, status: 403, error: "Use the Wavesmith app on this computer." };
   }
   return { ok: true };
 }
