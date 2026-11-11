@@ -4,6 +4,7 @@
  */
 
 import type { Flags } from "./args.ts";
+import type { ProcessIdentity } from "./identity.ts";
 
 export interface CommandProbe {
   ok: boolean;
@@ -24,6 +25,12 @@ export interface CliIo {
   remove(path: string): void;
   exists(path: string): boolean;
   pidAlive(pid: number): boolean;
+  /** Command line and start time, or null when the pid is gone. Not a kill -0 check. */
+  processIdentity(pid: number): ProcessIdentity | null;
+  /** Exclusive start lock. False means another start holds it. */
+  acquireStartLock(): boolean;
+  releaseStartLock(): void;
+  waitUntilListening(port: number, budgetMs: number): Promise<boolean>;
   listenAddresses(port: number): string[];
   diskFreeBytes(): number;
   command(name: string): CommandProbe;

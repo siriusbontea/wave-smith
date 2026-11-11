@@ -1,6 +1,7 @@
 /**
  * lib/setup/progress.ts — what the setup screen shows.
- * Pure data. The file on disk is written by scripts/setup.sh.
+ * Pure data. The file on disk is written by scripts/setup.sh and the installer.
+ * failed and stopped stay on screen so a non-technical user sees a next step.
  */
 
 import { z } from "zod";
@@ -45,6 +46,16 @@ export function interpretSetup(raw: string | null): SetupView {
   } catch {
     return idle;
   }
+}
+
+/** The studio stays hidden while setup is running, failed, or stopped. A finished setup does not. */
+export function setupBlocksStudio(view: SetupView): boolean {
+  return view.running || view.phase === "failed" || view.phase === "stopped";
+}
+
+export function setupNextStep(view: SetupView): string | null {
+  if (view.phase !== "failed" && view.phase !== "stopped") return null;
+  return "Next: open Terminal and run the installer again. It is safe to run twice. Your songs stay put.";
 }
 
 export function formatEta(seconds: number | null): string | null {

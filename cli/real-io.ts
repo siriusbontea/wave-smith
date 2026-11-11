@@ -6,7 +6,9 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readProcessIdentity } from "./identity.ts";
 import type { CliIo } from "./io.ts";
+import { lockDir, releaseLock, takeStartLock } from "./lock.ts";
 import { addressesOnPort, parseLsof, parseProcNet } from "./ports.ts";
 import { homeDir, repoRoot, stateDirectory } from "./paths.ts";
 import { supervise } from "./supervise.ts";
@@ -54,6 +56,31 @@ export function realIo(): CliIo {
         return false;
       }
     },
+    processIdentity(pid) {
+      return readProcessIdentity(pid);
+    },
+    acquireStartLock() {
+      const self = readProcessIdentity(process.pid);
+      if (!self?.startedAt) return false;
+      return takeStartLock({
+        dir: lockDir(stateDir),
+        ownerPid: process.pid,
+        ownerStartedAt: self.startedAt,
+        identity: readProcessIdentity,
+      });
+    },
+    releaseStartLock() {
+      releaseLock(lockDir(stateDir));
+    },
+    async waitUntilListening(port, budgetMs) {
+      const deadline = Date.now() + budgetMs;
+      while (Date.now() < deadline) {
+        const addresses = listenAddresses(port);
+        if (addresses.includes("127.0.0.1") || addresses.includes("::1")) return true;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      return false;
+    },
     listenAddresses(port) {
       return listenAddresses(port);
     },
@@ -96,7 +123,7 @@ export function realIo(): CliIo {
         cwd: root,
         detached: true,
         stdio: ["ignore", logFd, logFd],
-        env: { ...process.env, ...extra },
+        env: { ...process.env, ...extra, WAVESMITH_DAEMON: "1" },
       });
       child.unref();
       fs.closeSync(logFd);

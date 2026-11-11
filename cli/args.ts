@@ -13,7 +13,7 @@ export const USAGE = `Wavesmith runs on this Mac. The app stays on http://127.0.
   wavesmith doctor                Check this Mac and print a fix for each problem
   wavesmith logs                  Show the recent log (-f follows it)
   wavesmith uninstall             Remove the app. Asks before deleting songs or models
-  wavesmith login on              Start Wavesmith when you log in
+  wavesmith login on              Start now, and again each time you log in
   wavesmith login off             Leave launch at login off
   wavesmith login status          Print on or off
 

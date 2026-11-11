@@ -7,6 +7,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { childEnv } from "./envfile.ts";
+import { readProcessIdentity } from "./identity.ts";
+import { lockDir, releaseLock } from "./lock.ts";
 import { portFrom, serializePid } from "./pid.ts";
 import { repoRoot, stateDirectory } from "./paths.ts";
 
@@ -27,8 +29,15 @@ export async function supervise(options: { noOpen: boolean }): Promise<number> {
   const children: ChildProcess[] = [];
   let shuttingDown = false;
   const pidFile = path.join(stateDir, "wavesmith.pid");
+  const self = readProcessIdentity(process.pid);
+  const startedAt = self?.startedAt ?? "";
+  if (!startedAt) {
+    process.stderr.write("Wavesmith could not record its process start time. wavesmith stop may not recognize this copy.\n");
+  }
 
   const writePid = (enginePid: number | null, appPid: number | null) => {
+    const engine = enginePid ? readProcessIdentity(enginePid) : null;
+    const app = appPid ? readProcessIdentity(appPid) : null;
     fs.writeFileSync(
       pidFile,
       serializePid({
@@ -36,14 +45,23 @@ export async function supervise(options: { noOpen: boolean }): Promise<number> {
         enginePid,
         appPid,
         port,
-        startedAt: new Date().toISOString(),
+        startedAt,
+        engineStartedAt: engine?.startedAt ?? null,
+        appStartedAt: app?.startedAt ?? null,
       }),
     );
+  };
+
+  // The parent holds the lock for a background start. Foreground is the parent, so it lets go once the port is up.
+  const releaseOwnedLock = () => {
+    if (process.env.WAVESMITH_DAEMON === "1") return;
+    releaseLock(lockDir(stateDir));
   };
 
   const shutdown = (code: number) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    releaseOwnedLock();
     for (const child of children) {
       if (!child.pid) continue;
       try {
@@ -108,6 +126,7 @@ export async function supervise(options: { noOpen: boolean }): Promise<number> {
   });
 
   const ready = await waitFor(`http://127.0.0.1:${port}/api/health`, 120_000);
+  releaseOwnedLock();
   const open = !options.noOpen && process.env.WAVESMITH_NO_OPEN !== "1";
   if (ready && open) openBrowser(`http://127.0.0.1:${port}`);
   if (!ready) process.stdout.write("Wavesmith has not answered /api/health yet. It is still starting.\n");

@@ -123,8 +123,10 @@ Optional **Generate Lyrics** uses a local [Ollama](https://ollama.com) model. If
 
 One line installs Homebrew if you need it, then Node 22 or newer, pnpm, uv, ffmpeg, Python 3.12, and git. It clones Wavesmith to `~/Wavesmith`, downloads the music models, and adds the `wavesmith` command.
 
+The address is a commit, not the moving `main` branch. When `scripts/install.sh` changes, commit that change, then point this line at that commit in a follow-up that only updates the pin. The Homebrew installer inside the script has its own pinned commit; the note at the top of `scripts/install.sh` says how to bump that one.
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/siriusbontea/wave-smith/main/scripts/install.sh | bash
+curl -fsSL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/siriusbontea/wave-smith/INSTALLER_PIN/scripts/install.sh | bash
 wavesmith start
 ```
 
@@ -142,7 +144,7 @@ Then:
 | `wavesmith stop` | Stop them |
 | `wavesmith status` | Say whether they are running |
 | `wavesmith open` | Open http://127.0.0.1:3000 |
-| `wavesmith update` | Update the app and keep your songs and `.env` |
+| `wavesmith update` | Stop the app if it is running, update, then start it again. Songs and `.env` stay |
 | `wavesmith doctor` | Check this Mac and print a fix for each problem |
 | `wavesmith logs` | Show the recent log |
 | `wavesmith uninstall` | Remove the app. It asks before deleting songs or models |
@@ -151,7 +153,7 @@ The installer is safe to run again. It says what it is doing at each step.
 
 ### Menu bar
 
-The installer also puts **Wavesmith.app** in `~/Applications`. Double-click it. A music-note icon appears in the menu bar: **Start**, **Stop**, **Open Wavesmith**, **Status**, **Launch at Login**, and **Quit**. Quit closes the icon. It does not stop the music. Launch at Login is off until you turn it on. It uses a login item for your user only, and that item does not contain passwords or API keys.
+The installer also puts **Wavesmith.app** in `~/Applications`. Double-click it. A music-note icon appears in the menu bar: **Start**, **Stop**, **Open Wavesmith**, **Status**, **Launch at Login**, and **Quit**. Quit closes the icon. It does not stop the music. Launch at Login is off until you turn it on. Turning it on starts Wavesmith immediately, and again each time you log in. It uses a login item for your user only, and that item does not contain passwords or API keys.
 
 The app is not signed. The first time, macOS may say it cannot be opened. **Right-click Wavesmith in Applications, choose Open, then Open.** You do that once.
 

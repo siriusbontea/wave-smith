@@ -3,13 +3,19 @@
  * The machine is a fake. Nothing here binds a port or shells out.
  */
 import { describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { parseArgs } from "../cli/args.ts";
 import { doctorChecks, doctorFailed, nodeMajor } from "../cli/doctor.ts";
 import { childEnv, loadEnvFile } from "../cli/envfile.ts";
+import { parseBtime, parseProcStatStart, readProcessIdentity, isOurProcess } from "../cli/identity.ts";
 import type { CliIo } from "../cli/io.ts";
 import { renderLaunchAgent } from "../cli/launchd.ts";
+import { releaseLock, takeStartLock, tryAcquireLock } from "../cli/lock.ts";
 import { decideStart, parsePid, portFrom, serializePid } from "../cli/pid.ts";
-import { lastLines, planUninstall, updateCommands } from "../cli/plans.ts";
+import { lastLines, planUninstall, resolveConfiguredDir, stripWavesmithPath, updateCommands } from "../cli/plans.ts";
 import { addressesOnPort, assessPort, parseLsof, parseProcNet, parseSs } from "../cli/ports.ts";
 import { run } from "../cli/run.ts";
 
@@ -61,6 +67,16 @@ function fakeIo(overrides: Partial<CliIo> = {}): CliIo & {
     },
     pidAlive(pid: number) {
       return alive.has(pid);
+    },
+    processIdentity() {
+      return null;
+    },
+    acquireStartLock() {
+      return true;
+    },
+    releaseStartLock() {},
+    async waitUntilListening() {
+      return true;
     },
     listenAddresses() {
       return [] as string[];
@@ -167,8 +183,12 @@ describe("pid and ports", () => {
       appPid: null,
       port: 3000,
       startedAt: "t",
+      engineStartedAt: "e",
+      appStartedAt: null,
     });
     expect(parsePid(raw)?.supervisorPid).toBe(10);
+    expect(parsePid(raw)?.engineStartedAt).toBe("e");
+    expect(parsePid('{"supervisorPid":1,"port":3000,"startedAt":"t"}')?.appStartedAt).toBeNull();
     expect(parsePid("nope")).toBeNull();
     expect(parsePid(null)).toBeNull();
   });
@@ -176,7 +196,15 @@ describe("pid and ports", () => {
   it("does not start a second copy, and refuses a port open on every network", () => {
     expect(
       decideStart({
-        record: { supervisorPid: 5, enginePid: null, appPid: null, port: 3000, startedAt: "" },
+        record: {
+          supervisorPid: 5,
+          enginePid: null,
+          appPid: null,
+          port: 3000,
+          startedAt: "",
+          engineStartedAt: null,
+          appStartedAt: null,
+        },
         supervisorAlive: true,
         listeners: ["127.0.0.1"],
         port: 3000,
@@ -273,10 +301,12 @@ describe("run", () => {
       enginePid: null,
       appPid: null,
       port: 3000,
-      startedAt: "",
+      startedAt: "sup",
+      engineStartedAt: null,
+      appStartedAt: null,
     });
-    const original = io.pidAlive;
-    io.pidAlive = (pid) => pid === 7 || original(pid);
+    io.processIdentity = (pid) =>
+      pid === 7 ? { command: "node cli/main.ts __supervise", startedAt: "sup" } : null;
     const code = await run(["start"], io);
     expect(code).toBe(0);
     expect(io.spawned).toBe(0);
@@ -309,8 +339,16 @@ describe("run", () => {
       enginePid: 10,
       appPid: 11,
       port: 3000,
-      startedAt: "",
+      startedAt: "sup",
+      engineStartedAt: "eng",
+      appStartedAt: "app",
     });
+    io.processIdentity = (pid) => {
+      if (pid === 9) return { command: "node cli/main.ts __supervise", startedAt: "sup" };
+      if (pid === 10) return { command: "uv run acestep-api --host 127.0.0.1", startedAt: "eng" };
+      if (pid === 11) return { command: "pnpm exec next start --hostname 127.0.0.1", startedAt: "app" };
+      return null;
+    };
     const living = new Set([9, 10, 11]);
     io.pidAlive = (pid) => living.has(pid);
     io.signal = (pid) => living.delete(pid);
@@ -323,7 +361,8 @@ describe("run", () => {
     const io = fakeIo();
     expect(await run(["update"], io)).toBe(0);
     expect(io.execs).toEqual(updateCommands());
-    expect(io.removed).toEqual([]);
+    expect(io.spawned).toBe(0);
+    expect(io.removed.some((file) => file.endsWith("/data") || file.endsWith("/.env"))).toBe(false);
     expect(JSON.stringify(io.execs)).not.toMatch(/data\/|\.env/);
   });
 
@@ -332,14 +371,33 @@ describe("run", () => {
     expect(await run(["uninstall"], io)).toBe(0);
     expect(io.removed).not.toContain("/Users/ada/Wavesmith/data");
     expect(io.removed).not.toContain("/Users/ada/Wavesmith/engine");
+    expect(io.removed).not.toContain("/Users/ada/Wavesmith");
+    expect(io.removed).toContain(io.stateDir);
+    expect(io.execs[0]).toEqual([
+      "launchctl",
+      "bootout",
+      "gui/501",
+      "/Users/ada/Library/LaunchAgents/com.wavesmith.login.plist",
+    ]);
     expect(io.out).toMatch(/data/);
+    expect(io.out).toMatch(/folder stays/);
     const plan = planUninstall({
       root: "/Users/ada/Wavesmith",
       home: "/Users/ada",
+      stateDir: "/Users/ada/Library/Application Support/Wavesmith",
       deleteData: false,
       deleteWeights: false,
+      dataDir: "/Users/ada/Wavesmith/data",
+      engineDir: "/Users/ada/Wavesmith/engine/ACE-Step-1.5",
     });
-    expect(plan.keep).toEqual(expect.arrayContaining(["/Users/ada/Wavesmith/data", "/Users/ada/Wavesmith/.env", "/Users/ada/Wavesmith/engine"]));
+    expect(plan.keep).toEqual(
+      expect.arrayContaining([
+        "/Users/ada/Wavesmith/data",
+        "/Users/ada/Wavesmith/.env",
+        "/Users/ada/Wavesmith/engine/ACE-Step-1.5",
+      ]),
+    );
+    expect(plan.remove).not.toContain("/Users/ada/Wavesmith");
   });
 
   it("writes a login item with no secrets", async () => {
@@ -349,6 +407,7 @@ describe("run", () => {
     expect(plist).toMatch(/wavesmith-login\.sh/);
     expect(plist).not.toMatch(/XAI_API_KEY|EnvironmentVariables|BEGIN/);
     expect(renderLaunchAgent("/tmp/wavesmith-login.sh")).not.toMatch(/secret-token/);
+    expect(io.out).toMatch(/starts now, and again each time you log in/);
   });
 
   it("doctor prints fixes from the fake machine", async () => {
@@ -373,5 +432,245 @@ describe("env file", () => {
     expect(env.MOCK_ENGINE).toBe("1");
     expect(env.PORT).toBe("3000");
     expect(lastLines("a\nb\nc\n", 2)).toBe("b\nc");
+  });
+});
+
+describe("process identity", () => {
+  it("reads a start tick after the comm field", () => {
+    const fields = ["S", "1", "1", "1", "0", "-1", "0", "0", "0", "0", "0", "0", "0", "0", "20", "0", "1", "0", "0", "424242"];
+    expect(parseProcStatStart(`42 (cli/main.ts) ${fields.join(" ")}`)).toBe("424242");
+    expect(parseProcStatStart(`7 (next (server)) ${fields.join(" ").replace("424242", "99")}`)).toBe("99");
+    expect(parseBtime("cpu 1\nbtime 1700000000\n")).toBe("1700000000");
+    expect(parseProcStatStart(fs.readFileSync("/proc/self/stat", "utf8"))).toMatch(/^\d+$/);
+  });
+
+  it("rejects a mismatched command or start time", () => {
+    const actual = { command: "sleep 300", startedAt: "100:200" };
+    expect(isOurProcess({ expectedStartedAt: "100:200", marker: "cli/main.ts", actual })).toBe(false);
+    expect(
+      isOurProcess({
+        expectedStartedAt: "100:1",
+        marker: "cli/main.ts",
+        actual: { command: "node cli/main.ts __supervise", startedAt: "100:200" },
+      }),
+    ).toBe(false);
+    expect(
+      isOurProcess({
+        expectedStartedAt: "100:200",
+        marker: "cli/main.ts",
+        actual: { command: "node cli/main.ts __supervise", startedAt: "100:200" },
+      }),
+    ).toBe(true);
+    expect(isOurProcess({ expectedStartedAt: "", marker: "cli/main.ts", actual })).toBe(false);
+    expect(isOurProcess({ expectedStartedAt: "100:200", marker: "cli/main.ts", actual: null })).toBe(false);
+  });
+
+  it("does not kill a live unrelated process, and does not call it Wavesmith", async () => {
+    const child = spawn("sleep", ["60"], { detached: true, stdio: "ignore" });
+    const pid = child.pid;
+    expect(pid).toBeTruthy();
+    const identity = readProcessIdentity(pid as number);
+    expect(identity?.command).toMatch(/sleep/);
+    const io = fakeIo();
+    io.written[`${io.stateDir}/wavesmith.pid`] = serializePid({
+      supervisorPid: pid as number,
+      enginePid: pid as number,
+      appPid: null,
+      port: 3000,
+      startedAt: identity?.startedAt ?? "missing",
+      engineStartedAt: identity?.startedAt ?? "missing",
+      appStartedAt: null,
+    });
+    io.processIdentity = (asked) => (asked === pid ? readProcessIdentity(asked) : null);
+    io.pidAlive = () => true;
+    const signaled: number[] = [];
+    io.signal = (target) => signaled.push(target);
+    expect(await run(["stop"], io)).toBe(0);
+    expect(signaled).toEqual([]);
+    expect(io.out).toMatch(/not running/);
+    expect(() => process.kill(pid as number, 0)).not.toThrow();
+
+    const start = fakeIo();
+    start.written[`${start.stateDir}/wavesmith.pid`] = io.written[`${io.stateDir}/wavesmith.pid`] ?? "";
+    start.processIdentity = io.processIdentity;
+    start.pidAlive = () => true;
+    expect(await run(["start", "--no-open"], start)).toBe(0);
+    expect(start.out).not.toMatch(/already running/);
+    expect(start.spawned).toBe(1);
+    process.kill(pid as number, "SIGKILL");
+    child.unref();
+  });
+
+  it("does not signal when the start time changed under the same command", async () => {
+    const io = fakeIo();
+    io.written[`${io.stateDir}/wavesmith.pid`] = serializePid({
+      supervisorPid: 9,
+      enginePid: null,
+      appPid: null,
+      port: 3000,
+      startedAt: "100:1",
+      engineStartedAt: null,
+      appStartedAt: null,
+    });
+    io.processIdentity = () => ({ command: "node cli/main.ts __supervise", startedAt: "100:999" });
+    io.pidAlive = () => true;
+    const signaled: number[] = [];
+    io.signal = (pid) => signaled.push(pid);
+    expect(await run(["stop"], io)).toBe(0);
+    expect(signaled).toEqual([]);
+  });
+
+  it("does not SIGKILL a pid that was reused after SIGTERM", async () => {
+    const io = fakeIo();
+    io.written[`${io.stateDir}/wavesmith.pid`] = serializePid({
+      supervisorPid: 9,
+      enginePid: null,
+      appPid: null,
+      port: 3000,
+      startedAt: "sup",
+      engineStartedAt: null,
+      appStartedAt: null,
+    });
+    let checks = 0;
+    io.processIdentity = () => {
+      checks += 1;
+      if (checks > 1) return { command: "sleep 60", startedAt: "other" };
+      return { command: "node cli/main.ts __supervise", startedAt: "sup" };
+    };
+    io.pidAlive = () => true;
+    const signals: string[] = [];
+    io.signal = (_pid, signal) => signals.push(signal);
+    expect(await run(["stop"], io)).toBe(0);
+    expect(signals).toEqual(["SIGTERM"]);
+  });
+});
+
+describe("start lock and update", () => {
+  it("lets only one mkdir lock win", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-lock-"));
+    const lock = path.join(dir, "start.lock");
+    expect(tryAcquireLock(lock)).toBe(true);
+    expect(tryAcquireLock(lock)).toBe(false);
+    releaseLock(lock);
+    expect(tryAcquireLock(lock)).toBe(true);
+    releaseLock(lock);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("two processes cannot both take the start lock", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-lock-race-"));
+    const lock = path.join(dir, "start.lock");
+    const script = `
+      import { tryAcquireLock } from ${JSON.stringify(path.join(process.cwd(), "cli/lock.ts"))};
+      process.stdout.write(tryAcquireLock(process.argv[1]) ? "yes" : "no");
+    `;
+    const runOne = () =>
+      new Promise<string>((resolve, reject) => {
+        const child = spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script, lock], {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          out += chunk.toString("utf8");
+        });
+        child.stderr.on("data", (chunk: Buffer) => {
+          err += chunk.toString("utf8");
+        });
+        child.on("error", reject);
+        child.on("close", (code) => {
+          if (code !== 0) reject(new Error(err || `lock racer exited ${code}`));
+          else resolve(out);
+        });
+      });
+    const [first, second] = await Promise.all([runOne(), runOne()]);
+    expect([first, second].sort()).toEqual(["no", "yes"]);
+    releaseLock(lock);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a second start does not spawn while the lock is held", async () => {
+    const io = fakeIo();
+    io.acquireStartLock = () => false;
+    expect(await run(["start"], io)).toBe(1);
+    expect(io.spawned).toBe(0);
+    expect(io.err).toMatch(/already starting/);
+  });
+
+  it("steals a lock whose owner is not Wavesmith", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-stale-lock-"));
+    const lock = path.join(dir, "start.lock");
+    fs.mkdirSync(lock);
+    fs.writeFileSync(path.join(lock, "owner"), JSON.stringify({ pid: 4242, startedAt: "old" }));
+    const took = takeStartLock({
+      dir: lock,
+      ownerPid: process.pid,
+      ownerStartedAt: "now",
+      identity: () => ({ command: "sleep 60", startedAt: "old" }),
+    });
+    expect(took).toBe(true);
+    releaseLock(lock);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("stops a running app before update and starts it again", async () => {
+    const io = fakeIo();
+    io.written[`${io.stateDir}/wavesmith.pid`] = serializePid({
+      supervisorPid: 9,
+      enginePid: 10,
+      appPid: 11,
+      port: 3000,
+      startedAt: "sup",
+      engineStartedAt: "eng",
+      appStartedAt: "app",
+    });
+    io.processIdentity = (pid) => {
+      if (pid === 9) return { command: "node cli/main.ts __supervise", startedAt: "sup" };
+      if (pid === 10) return { command: "acestep-api --host 127.0.0.1", startedAt: "eng" };
+      if (pid === 11) return { command: "next start --hostname 127.0.0.1", startedAt: "app" };
+      return null;
+    };
+    const signaled: number[] = [];
+    io.signal = (pid) => signaled.push(pid);
+    expect(await run(["update"], io)).toBe(0);
+    expect(signaled).toEqual(expect.arrayContaining([9, 10, 11]));
+    expect(io.execs).toEqual(updateCommands());
+    expect(io.spawned).toBe(1);
+    expect(io.out).toMatch(/Stopping Wavesmith/);
+    expect(io.out).toMatch(/Starting Wavesmith again/);
+    expect(JSON.stringify(io.execs)).not.toMatch(/\.env/);
+  });
+});
+
+describe("uninstall leftovers", () => {
+  it("boots out the login item even when launchctl fails", async () => {
+    const io = fakeIo();
+    io.exec = (command, args) => {
+      io.execs.push([command, ...args]);
+      return { code: command === "launchctl" ? 1 : 0 };
+    };
+    expect(await run(["uninstall"], io)).toBe(0);
+    expect(io.execs.some((row) => row[0] === "launchctl" && row[1] === "bootout")).toBe(true);
+  });
+
+  it("removes the PATH lines and the configured data and engine directories", async () => {
+    const io = fakeIo();
+    io.platform = "linux";
+    io.written[`${io.root}/.env`] = "DATA_DIR=/songs\nENGINE_DIR=/weights\n";
+    io.written[`${io.home}/.zprofile`] = 'export A=1\n# Wavesmith\nexport PATH="$HOME/.local/bin:$PATH"\nexport B=2\n';
+    io.written[`${io.home}/.bash_profile`] = "# Wavesmith\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
+    expect(await run(["uninstall", "--delete-data", "--delete-weights"], io)).toBe(0);
+    expect(io.removed).toContain("/songs");
+    expect(io.removed).toContain("/weights");
+    expect(io.removed).not.toContain("/Users/ada/Wavesmith/data");
+    expect(io.removed).not.toContain("/Users/ada/Wavesmith/engine");
+    expect(io.removed).not.toContain(`${io.root}/.env`);
+    expect(io.execs.some((row) => row[0] === "launchctl")).toBe(false);
+    expect(io.written[`${io.home}/.zprofile`]).toBe("export A=1\nexport B=2\n");
+    expect(io.written[`${io.home}/.bash_profile`]).not.toMatch(/Wavesmith/);
+    expect(
+      resolveConfiguredDir("/Users/ada/Wavesmith", "DATA_DIR=./library\n", "DATA_DIR", "data", {}),
+    ).toBe("/Users/ada/Wavesmith/library");
+    expect(stripWavesmithPath("keep\n# Wavesmith\nexport PATH=\"$HOME/.local/bin:$PATH\"\n")).toBe("keep\n");
   });
 });

@@ -24,6 +24,12 @@ fi
 if [[ -d /usr/local/opt/python@3.12/bin ]]; then
   export PATH="/usr/local/opt/python@3.12/bin:${PATH}"
 fi
+# Prefer the Node 22 keg without replacing another Node on the Mac.
+if [[ -x /opt/homebrew/opt/node@22/bin/node ]]; then
+  export PATH="/opt/homebrew/opt/node@22/bin:${PATH}"
+elif [[ -x /usr/local/opt/node@22/bin/node ]]; then
+  export PATH="/usr/local/opt/node@22/bin:${PATH}"
+fi
 
 if ! command -v node >/dev/null 2>&1; then
   printf 'Node.js is not installed.\nFix: brew install node@22\n' >&2

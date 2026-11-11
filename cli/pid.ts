@@ -1,6 +1,7 @@
 /**
  * cli/pid.ts — one Wavesmith at a time.
- * The supervisor pid is the lock. A dead pid file is stale and may be replaced.
+ * The pid file is a hint. Callers treat it as Wavesmith only after the command
+ * and the recorded start time both match. A mismatch is stale and is not signalled.
  */
 
 import { assessPort } from "./ports.ts";
@@ -10,7 +11,10 @@ export interface PidRecord {
   enginePid: number | null;
   appPid: number | null;
   port: number;
+  /** Supervisor start time from readProcessIdentity, not a wall clock. */
   startedAt: string;
+  engineStartedAt: string | null;
+  appStartedAt: string | null;
 }
 
 export function serializePid(record: PidRecord): string {
@@ -29,6 +33,8 @@ export function parsePid(raw: string | null): PidRecord | null {
       appPid: typeof value.appPid === "number" ? value.appPid : null,
       port: value.port,
       startedAt: typeof value.startedAt === "string" ? value.startedAt : "",
+      engineStartedAt: typeof value.engineStartedAt === "string" ? value.engineStartedAt : null,
+      appStartedAt: typeof value.appStartedAt === "string" ? value.appStartedAt : null,
     };
   } catch {
     return null;

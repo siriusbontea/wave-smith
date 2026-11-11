@@ -6,10 +6,11 @@
 
 import { parseArgs, type Flags } from "./args.ts";
 import { doctorChecks, doctorFailed, formatDoctor, type DoctorInput } from "./doctor.ts";
+import { APP_MARKER, ENGINE_MARKER, SUPERVISOR_MARKER, isOurProcess } from "./identity.ts";
 import type { CliIo } from "./io.ts";
 import { renderLaunchAgent } from "./launchd.ts";
-import { decideStart, parsePid, portFrom } from "./pid.ts";
-import { lastLines, planUninstall, updateCommands } from "./plans.ts";
+import { decideStart, parsePid, portFrom, type PidRecord } from "./pid.ts";
+import { lastLines, planUninstall, resolveConfiguredDir, stripWavesmithPath, updateCommands } from "./plans.ts";
 
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   const parsed = parseArgs(argv);
@@ -57,6 +58,40 @@ function appUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
 }
 
+interface OwnedProcess {
+  pid: number;
+  startedAt: string;
+  marker: string;
+}
+
+function matches(io: CliIo, pid: number, startedAt: string, marker: string): boolean {
+  return isOurProcess({
+    expectedStartedAt: startedAt,
+    marker,
+    actual: io.processIdentity(pid),
+  });
+}
+
+function supervisorMatches(io: CliIo, record: PidRecord | null): boolean {
+  if (!record) return false;
+  return matches(io, record.supervisorPid, record.startedAt, SUPERVISOR_MARKER);
+}
+
+/** Verified processes only. A stale pid is left out and must not be signalled. */
+function ownedProcesses(io: CliIo, record: PidRecord | null): OwnedProcess[] {
+  if (!record) return [];
+  const out: OwnedProcess[] = [];
+  const push = (pid: number | null, startedAt: string | null, marker: string) => {
+    if (!pid || !startedAt) return;
+    if (!matches(io, pid, startedAt, marker)) return;
+    out.push({ pid, startedAt, marker });
+  };
+  push(record.supervisorPid, record.startedAt, SUPERVISOR_MARKER);
+  push(record.enginePid, record.engineStartedAt, ENGINE_MARKER);
+  push(record.appPid, record.appStartedAt, APP_MARKER);
+  return out;
+}
+
 function setupRunning(raw: string | null): boolean {
   if (!raw) return false;
   try {
@@ -68,73 +103,87 @@ function setupRunning(raw: string | null): boolean {
 }
 
 async function start(io: CliIo, flags: Flags): Promise<number> {
-  const port = portFrom(io.env);
-  const record = parsePid(io.readText(pidPath(io)));
-  const decision = decideStart({
-    record,
-    supervisorAlive: record ? io.pidAlive(record.supervisorPid) : false,
-    listeners: io.listenAddresses(port),
-    port,
-  });
-  if (decision.action === "already") {
-    io.stdout(`Wavesmith is already running at ${appUrl(decision.port)}\n`);
-    if (!flags.noOpen) io.openUrl(appUrl(decision.port));
-    return 0;
-  }
-  if (decision.action === "refuse") {
-    io.stderr(`${decision.message}\nFix: ${decision.fix}\n`);
+  if (!io.acquireStartLock()) {
+    io.stderr("Wavesmith is already starting.\nFix: wait a moment, then run wavesmith status\n");
     return 1;
   }
-
-  const mock = io.env.MOCK_ENGINE === "1";
-  const engineReady = io.exists(`${io.root}/engine/ACE-Step-1.5/.venv`);
-  const setupIsRunning = setupRunning(io.readText(`${dataDir(io)}/setup-progress.json`));
-  if (!mock && !engineReady && !setupIsRunning) {
-    io.stderr("The music engine is not installed yet.\nFix: run the installer again.\n");
-    return 1;
-  }
-  if (!io.buildPresent() && io.env.WAVESMITH_SKIP_BUILD !== "1") {
-    io.stdout("Building Wavesmith. This takes a minute.\n");
-    const built = io.exec("pnpm", ["build"]);
-    if (built.code !== 0) {
-      io.stderr("The build failed.\nFix: run wavesmith doctor\n");
-      return built.code || 1;
+  try {
+    const port = portFrom(io.env);
+    const record = parsePid(io.readText(pidPath(io)));
+    const ours = supervisorMatches(io, record);
+    if (record && !ours) io.remove(pidPath(io));
+    const decision = decideStart({
+      record: ours ? record : null,
+      supervisorAlive: ours,
+      listeners: io.listenAddresses(port),
+      port,
+    });
+    if (decision.action === "already") {
+      io.stdout(`Wavesmith is already running at ${appUrl(decision.port)}\n`);
+      if (!flags.noOpen) io.openUrl(appUrl(decision.port));
+      return 0;
     }
+    if (decision.action === "refuse") {
+      io.stderr(`${decision.message}\nFix: ${decision.fix}\n`);
+      return 1;
+    }
+
+    const mock = io.env.MOCK_ENGINE === "1";
+    const engineReady = io.exists(`${io.root}/engine/ACE-Step-1.5/.venv`);
+    const setupIsRunning = setupRunning(io.readText(`${dataDir(io)}/setup-progress.json`));
+    if (!mock && !engineReady && !setupIsRunning) {
+      io.stderr("The music engine is not installed yet.\nFix: run the installer again.\n");
+      return 1;
+    }
+    if (!io.buildPresent() && io.env.WAVESMITH_SKIP_BUILD !== "1") {
+      io.stdout("Building Wavesmith. This takes a minute.\n");
+      const built = io.exec("pnpm", ["build"]);
+      if (built.code !== 0) {
+        io.stderr("The build failed.\nFix: run wavesmith doctor\n");
+        return built.code || 1;
+      }
+    }
+    if (flags.foreground) return await io.supervise({ noOpen: flags.noOpen });
+    const pid = io.spawnSupervisor({
+      PORT: String(port),
+      WAVESMITH_NO_OPEN: flags.noOpen ? "1" : "0",
+      WAVESMITH_SKIP_ENGINE: mock || !engineReady ? "1" : "0",
+      WAVESMITH_STATE_DIR: io.stateDir,
+      WAVESMITH_ROOT: io.root,
+    });
+    if (!pid) {
+      io.stderr("Couldn't start Wavesmith in the background.\nFix: run wavesmith doctor\n");
+      return 1;
+    }
+    const ready = await io.waitUntilListening(port, 120_000);
+    if (!ready) {
+      io.stderr("Wavesmith is still starting.\nFix: run wavesmith logs\n");
+      return 1;
+    }
+    io.stdout(`Wavesmith is ready at ${appUrl(port)}\n`);
+    return 0;
+  } finally {
+    io.releaseStartLock();
   }
-  if (flags.foreground) return io.supervise({ noOpen: flags.noOpen });
-  const pid = io.spawnSupervisor({
-    PORT: String(port),
-    WAVESMITH_NO_OPEN: flags.noOpen ? "1" : "0",
-    WAVESMITH_SKIP_ENGINE: mock || !engineReady ? "1" : "0",
-    WAVESMITH_STATE_DIR: io.stateDir,
-    WAVESMITH_ROOT: io.root,
-  });
-  if (!pid) {
-    io.stderr("Couldn't start Wavesmith in the background.\nFix: run wavesmith doctor\n");
-    return 1;
-  }
-  io.stdout(`Starting Wavesmith. The browser will open at ${appUrl(port)} when it is ready.\n`);
-  return 0;
 }
 
 function stop(io: CliIo): number {
   const record = parsePid(io.readText(pidPath(io)));
-  const pids = [record?.supervisorPid, record?.enginePid, record?.appPid].filter(
-    (pid): pid is number => typeof pid === "number",
-  );
-  const alive = pids.filter((pid) => io.pidAlive(pid));
-  if (!record || alive.length === 0) {
+  const targets = ownedProcesses(io, record);
+  if (targets.length === 0) {
     io.remove(pidPath(io));
     io.stdout("Wavesmith is not running.\n");
     return 0;
   }
-  for (const pid of alive) io.signal(pid, "SIGTERM");
+  for (const target of targets) io.signal(target.pid, "SIGTERM");
   for (let i = 0; i < 25; i += 1) {
-    if (alive.every((pid) => !io.pidAlive(pid))) break;
+    if (targets.every((target) => !io.pidAlive(target.pid))) break;
     io.sleep(200);
   }
-  for (const pid of alive) {
-    if (io.pidAlive(pid)) io.signal(pid, "SIGKILL");
+  for (const target of targets) {
+    if (!io.pidAlive(target.pid)) continue;
+    if (!matches(io, target.pid, target.startedAt, target.marker)) continue;
+    io.signal(target.pid, "SIGKILL");
   }
   io.remove(pidPath(io));
   io.stdout("Wavesmith stopped.\n");
@@ -144,7 +193,7 @@ function stop(io: CliIo): number {
 function status(io: CliIo): number {
   const port = portFrom(io.env);
   const record = parsePid(io.readText(pidPath(io)));
-  const running = Boolean(record && io.pidAlive(record.supervisorPid));
+  const running = supervisorMatches(io, record);
   if (!running) {
     io.stdout("Wavesmith is not running.\nStart it with: wavesmith start\n");
     return 0;
@@ -163,7 +212,7 @@ function status(io: CliIo): number {
 function open(io: CliIo): number {
   const record = parsePid(io.readText(pidPath(io)));
   const port = record?.port ?? portFrom(io.env);
-  if (!record || !io.pidAlive(record.supervisorPid)) {
+  if (!supervisorMatches(io, record)) {
     io.stderr("Wavesmith is not running.\nFix: wavesmith start\n");
     return 1;
   }
@@ -172,8 +221,14 @@ function open(io: CliIo): number {
   return 0;
 }
 
-function update(io: CliIo): number {
-  io.stdout("Updating Wavesmith. Your songs, data/, and .env stay where they are.\n");
+async function update(io: CliIo): Promise<number> {
+  const wasRunning = supervisorMatches(io, parsePid(io.readText(pidPath(io))));
+  if (wasRunning) {
+    io.stdout("Stopping Wavesmith before the update. Your songs, data/, and .env stay where they are.\n");
+    stop(io);
+  } else {
+    io.stdout("Updating Wavesmith. Your songs, data/, and .env stay where they are.\n");
+  }
   for (const [command, ...args] of updateCommands()) {
     if (!command) continue;
     io.stdout(`\n$ ${[command, ...args].join(" ")}\n`);
@@ -182,6 +237,16 @@ function update(io: CliIo): number {
       io.stderr(`That step failed (${command}).\nFix: run wavesmith doctor\n`);
       return result.code || 1;
     }
+  }
+  if (wasRunning) {
+    io.stdout("\nStarting Wavesmith again.\n");
+    return start(io, {
+      noOpen: false,
+      foreground: false,
+      follow: false,
+      deleteData: false,
+      deleteWeights: false,
+    });
   }
   io.stdout("\nUpdate finished. Start again with: wavesmith start\n");
   return 0;
@@ -232,6 +297,10 @@ function logs(io: CliIo, follow: boolean): number {
 
 function uninstall(io: CliIo, flags: Flags): number {
   stop(io);
+  const plistPath = `${io.home}/Library/LaunchAgents/com.wavesmith.login.plist`;
+  if (io.platform === "darwin") {
+    io.exec("launchctl", ["bootout", `gui/${io.uid}`, plistPath]);
+  }
   let deleteData = flags.deleteData;
   let deleteWeights = flags.deleteWeights;
   if (!flags.deleteData && !flags.deleteWeights && io.isTty()) {
@@ -240,14 +309,29 @@ function uninstall(io: CliIo, flags: Flags): number {
   } else if (!flags.deleteData && !flags.deleteWeights) {
     io.stdout("Keeping data/ and the downloaded models. Pass --delete-data or --delete-weights to remove them.\n");
   }
+  const envText = io.readText(`${io.root}/.env`);
   const plan = planUninstall({
     root: io.root,
     home: io.home,
+    stateDir: io.stateDir,
     deleteData,
     deleteWeights,
+    dataDir: resolveConfiguredDir(io.root, envText, "DATA_DIR", "data", io.env),
+    engineDir: resolveConfiguredDir(io.root, envText, "ENGINE_DIR", "engine/ACE-Step-1.5", io.env),
   });
   for (const path of plan.remove) io.remove(path);
+  for (const name of [".zprofile", ".bash_profile"]) {
+    const file = `${io.home}/${name}`;
+    const text = io.readText(file);
+    if (!text || !text.includes("# Wavesmith")) continue;
+    io.writeText(file, stripWavesmithPath(text));
+  }
   io.stdout("Wavesmith is removed from the menu bar, the login item, and ~/.local/bin.\n");
+  if (!deleteData && !deleteWeights) {
+    io.stdout("The Wavesmith folder stays, so your songs, .env, and downloaded models stay.\n");
+  } else {
+    io.stdout("The Wavesmith folder stays. .env stays.\n");
+  }
   io.stdout(`Kept: ${plan.keep.join(", ")}\n`);
   return 0;
 }
@@ -291,6 +375,6 @@ function login(io: CliIo, rest: readonly string[]): number {
     io.stderr("Couldn't register the login item.\nFix: run wavesmith login on again from Terminal.\n");
     return boot.code || 1;
   }
-  io.stdout("Launch at login is on. Wavesmith starts the next time you log in.\n");
+  io.stdout("Launch at login is on. Wavesmith starts now, and again each time you log in.\n");
   return 0;
 }
