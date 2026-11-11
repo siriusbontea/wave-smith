@@ -3,7 +3,7 @@
  * The machine is a fake. Nothing here binds a port or shells out.
  */
 import { describe, expect, it } from "vitest";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,7 +11,7 @@ import { parseArgs } from "../cli/args.ts";
 import { doctorChecks, doctorFailed, nodeMajor } from "../cli/doctor.ts";
 import { childEnv, loadEnvFile } from "../cli/envfile.ts";
 import { parseBtime, parseKernProcStart, parseProcStatStart, readProcessIdentity, isOurProcess, SUPERVISOR_MARKER } from "../cli/identity.ts";
-import { classifyDelete, hasWavesmithMarker, isDeniedSystemPath, SYSTEM_DIR_NAMES } from "../cli/uninstall-guard.ts";
+import { classifyDelete, hasWavesmithMarker, isDeniedSystemPath, SYSTEM_DIR_NAMES, type DeleteIO } from "../cli/uninstall-guard.ts";
 import type { CliIo } from "../cli/io.ts";
 import { renderLaunchAgent } from "../cli/launchd.ts";
 import { releaseLock, takeStartLock, tryAcquireLock } from "../cli/lock.ts";
@@ -758,14 +758,14 @@ describe("uninstall leftovers", () => {
   it("removes the PATH lines and the configured data and engine directories", async () => {
     const io = fakeIo();
     io.platform = "linux";
-    io.written[`${io.root}/.env`] = "DATA_DIR=/Users/ada/Wavesmith/songs\nENGINE_DIR=/Users/ada/Wavesmith/weights\n";
+    io.written[`${io.root}/.env`] = "DATA_DIR=/Users/ada/Wavesmith/data\nENGINE_DIR=/Users/ada/Wavesmith/engine/ACE-Step-1.5\n";
     io.written[`${io.home}/.zprofile`] = 'export A=1\n# Wavesmith\nexport PATH="$HOME/.local/bin:$PATH"\nexport B=2\n';
     io.written[`${io.home}/.bash_profile`] = "# Wavesmith\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
     expect(await run(["uninstall", "--delete-data", "--delete-weights"], io)).toBe(0);
-    expect(io.removed).toContain("/Users/ada/Wavesmith/songs");
-    expect(io.removed).toContain("/Users/ada/Wavesmith/weights");
-    expect(io.removed).not.toContain("/Users/ada/Wavesmith/data");
-    expect(io.removed).not.toContain("/Users/ada/Wavesmith/engine");
+    expect(io.removed).toContain("/Users/ada/Wavesmith/data");
+    expect(io.removed).toContain("/Users/ada/Wavesmith/engine/ACE-Step-1.5");
+    expect(io.removed).not.toContain("/Users/ada/Wavesmith/songs");
+    expect(io.removed).not.toContain("/Users/ada/Wavesmith");
     expect(io.removed).not.toContain(`${io.root}/.env`);
     expect(io.execs.some((row) => row[0] === "launchctl")).toBe(false);
     expect(io.written[`${io.home}/.zprofile`]).toBe("export A=1\nexport B=2\n");
@@ -821,8 +821,18 @@ describe("uninstall leftovers", () => {
       markedIo.stateDir = path.join(home, "Library", "Application Support", "Wavesmith");
       markedIo.env = { ...markedIo.env, DATA_DIR: marked };
       expect(hasWavesmithMarker(marked)).toBe(true);
-      expect(await run(["uninstall", "--delete-data"], markedIo)).toBe(0);
-      expect(markedIo.removed).toContain(marked);
+      expect(await run(["uninstall", "--delete-data"], markedIo)).toBe(1);
+      expect(markedIo.removed).not.toContain(marked);
+      const inside = path.join(home, "Music");
+      fs.mkdirSync(inside);
+      fs.writeFileSync(path.join(inside, "setup-progress.json"), installerProgress());
+      const insideIo = fakeIo();
+      insideIo.home = home;
+      insideIo.root = root;
+      insideIo.stateDir = path.join(home, "Library", "Application Support", "Wavesmith");
+      insideIo.env = { ...insideIo.env, DATA_DIR: inside };
+      expect(await run(["uninstall", "--delete-data"], insideIo)).toBe(0);
+      expect(insideIo.removed).toContain(inside);
       const weak = path.join(ancestor, "weak");
       fs.mkdirSync(weak);
       fs.writeFileSync(path.join(weak, "setup-progress.json"), "{\"running\":false}");
@@ -841,46 +851,77 @@ describe("uninstall leftovers", () => {
     }
   });
 
-  it("refuses system directories with or without a planted marker", async () => {
-    const home = "/home/ada";
-    const root = "/home/ada/Wavesmith";
-    const ctx = { home, root, env: {} as Record<string, string | undefined> };
-    const targets = [
-      ...SYSTEM_DIR_NAMES.map((name) => `/${name}`),
-      "/private/tmp",
-      "/private/var",
-      "/private/etc",
-    ];
+  it("refuses system directories and outside-home trees on a fake root", () => {
     expect(isDeniedSystemPath("/opt/local", ["/opt/local/wavesmith"])).toBe(true);
     expect(isDeniedSystemPath("/Users/ada/Wavesmith", [])).toBe(false);
     for (const name of ["home", "root", "mnt", "srv", "boot"]) {
       expect(isDeniedSystemPath(`/${name}`, []), name).toBe(true);
     }
-    for (const dir of targets) {
-      expect(classifyDelete(dir, ctx).ok, `${dir} without a marker`).toBe(false);
-      const made = ensureEmptyDirs(dir);
-      const marker = path.join(dir, "setup-progress.json");
-      const planted = spawnSync("sudo", ["tee", marker], { input: installerProgress(), encoding: "utf8" });
-      expect(planted.status, dir).toBe(0);
-      try {
-        expect(hasWavesmithMarker(dir), dir).toBe(true);
-        const verdict = classifyDelete(dir, ctx);
-        expect(verdict.ok, `${dir} with a marker`).toBe(false);
-        expect(verdict.message).toMatch(/system folder|home folder|Wavesmith install|whole disk/);
-        const io = fakeIo();
-        io.home = home;
-        io.root = root;
-        io.env = { DATA_DIR: dir };
-        expect(await run(["uninstall", "--delete-data"], io)).toBe(1);
-        expect(io.removed).not.toContain(dir);
-      } finally {
-        const removedFile = spawnSync("sudo", ["rm", "-f", marker], { encoding: "utf8" });
-        if (removedFile.status !== 0) throw new Error(removedFile.stderr || `could not remove ${marker}`);
-        for (const created of made.reverse()) {
-          const removedDir = spawnSync("sudo", ["rmdir", created], { encoding: "utf8" });
-          if (removedDir.status !== 0) throw new Error(removedDir.stderr || `could not remove ${created}`);
+
+    const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-fakeroot-"));
+    const home = "/Users/ada";
+    const install = "/Users/ada/Wavesmith";
+    const layout = [
+      ...SYSTEM_DIR_NAMES.map((name) => name),
+      "private/tmp",
+      "private/var",
+      "private/etc",
+      "usr/local",
+      "opt/homebrew",
+      "Library/Application Support",
+      "System/Library",
+      "var/folders/xx",
+      "Users/ada/Wavesmith/data",
+      "Users/ada/Wavesmith/engine/ACE-Step-1.5/checkpoints",
+      "Users/ada/Library/Application Support/Wavesmith",
+      "Users/ada/Music/Custom",
+    ];
+    for (const rel of layout) fs.mkdirSync(path.join(fakeRoot, rel), { recursive: true });
+    const io = fakeDeleteIO(fakeRoot);
+    const ctx = { home, root: install, env: {} as Record<string, string | undefined>, io };
+    try {
+      for (const name of SYSTEM_DIR_NAMES) {
+        const dir = `/${name}`;
+        expect(classifyDelete(dir, ctx).ok, `${dir} without a marker`).toBe(false);
+        writeFakeMarker(fakeRoot, dir);
+        expect(hasWavesmithMarker(dir, io), dir).toBe(true);
+        const planted = classifyDelete(dir, { ...ctx, env: { DATA_DIR: dir } });
+        expect(planted.ok, `${dir} with a marker`).toBe(false);
+        if (name === "Users") expect(planted.message).toMatch(/home or the Wavesmith install/);
+        else expect(planted.message).toMatch(/system folder/);
+      }
+      for (const dir of ["/private/tmp", "/private/var", "/private/etc"]) {
+        writeFakeMarker(fakeRoot, dir);
+        expect(classifyDelete(dir, { ...ctx, env: { DATA_DIR: dir } }).ok, dir).toBe(false);
+      }
+      const outside = [
+        "/usr/local",
+        "/opt/homebrew",
+        "/Library/Application Support",
+        "/System/Library",
+        "/var/folders/xx",
+      ];
+      for (const dir of outside) {
+        writeFakeMarker(fakeRoot, dir);
+        expect(hasWavesmithMarker(dir, io), dir).toBe(true);
+        for (const key of ["DATA_DIR", "ENGINE_DIR", "WAVESMITH_STATE_DIR"] as const) {
+          const verdict = classifyDelete(dir, { ...ctx, env: { [key]: dir } });
+          expect(verdict.ok, `${key}=${dir}`).toBe(false);
+          expect(verdict.message, dir).toMatch(/outside your home folder/);
         }
       }
+      expect(classifyDelete(`${install}/data`, ctx).ok).toBe(true);
+      expect(classifyDelete(`${install}/engine/ACE-Step-1.5/checkpoints`, ctx).ok).toBe(true);
+      expect(classifyDelete(`${home}/Library/Application Support/Wavesmith`, ctx).ok).toBe(true);
+      const custom = `${home}/Music/Custom`;
+      expect(classifyDelete(custom, { ...ctx, env: { DATA_DIR: custom } }).ok).toBe(false);
+      writeFakeMarker(fakeRoot, custom);
+      expect(classifyDelete(custom, { ...ctx, env: { DATA_DIR: custom } }).ok).toBe(true);
+      expect(classifyDelete(install, ctx).ok).toBe(false);
+      expect(fs.existsSync("/usr/local/setup-progress.json")).toBe(false);
+      expect(fs.existsSync("/opt/homebrew")).toBe(false);
+    } finally {
+      fs.rmSync(fakeRoot, { recursive: true, force: true });
     }
   });
 
@@ -918,16 +959,34 @@ describe("uninstall leftovers", () => {
   });
 });
 
-function ensureEmptyDirs(dir: string): string[] {
-  const made: string[] = [];
-  const parts = dir.split("/").filter((part) => part.length > 0);
-  let cursor = "";
-  for (const part of parts) {
-    cursor += `/${part}`;
-    if (fs.existsSync(cursor)) continue;
-    const created = spawnSync("sudo", ["mkdir", cursor], { encoding: "utf8" });
-    if (created.status !== 0) throw new Error(created.stderr || `could not create ${cursor}`);
-    made.push(cursor);
-  }
-  return made;
+function writeFakeMarker(fakeRoot: string, virtualDir: string): void {
+  const rel = virtualDir.replace(/^\//, "");
+  fs.writeFileSync(path.join(fakeRoot, rel, "setup-progress.json"), installerProgress());
+}
+
+/** Map virtual absolute paths onto a temp directory. realpath never leaves that directory. */
+function fakeDeleteIO(fakeRoot: string): DeleteIO {
+  const root = path.resolve(fakeRoot);
+  const toHost = (virtual: string) => {
+    const abs = path.posix.resolve(virtual);
+    if (abs === "/") return root;
+    return path.join(root, abs.slice(1));
+  };
+  const toVirtual = (hostPath: string) => {
+    const rel = path.relative(root, path.resolve(hostPath));
+    if (rel === "") return "/";
+    if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error(`escaped fake root: ${hostPath}`);
+    return `/${rel.split(path.sep).join("/")}`;
+  };
+  return {
+    realpathSync(target: string) {
+      return toVirtual(fs.realpathSync(toHost(target)));
+    },
+    statSync(target: string) {
+      return fs.statSync(toHost(target));
+    },
+    readFileSync(target: string, encoding: "utf8") {
+      return fs.readFileSync(toHost(target), encoding);
+    },
+  };
 }

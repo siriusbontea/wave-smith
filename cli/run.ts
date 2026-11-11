@@ -10,8 +10,8 @@ import { APP_MARKER, ENGINE_MARKER, SUPERVISOR_MARKER, isOurProcess } from "./id
 import type { CliIo } from "./io.ts";
 import { renderLaunchAgent } from "./launchd.ts";
 import { decideStart, parsePid, portFrom, type PidRecord } from "./pid.ts";
-import { lastLines, planUninstall, resolveConfiguredDir, stripWavesmithPath, updateCommands } from "./plans.ts";
-import { classifyDelete } from "./uninstall-guard.ts";
+import { lastLines, planUninstall, stripWavesmithPath, updateCommands } from "./plans.ts";
+import { classifyDelete, deleteClassifyEnv } from "./uninstall-guard.ts";
 
 export async function run(argv: readonly string[], io: CliIo): Promise<number> {
   const parsed = parseArgs(argv);
@@ -312,18 +312,19 @@ function uninstall(io: CliIo, flags: Flags): number {
   }
   const envText = io.readText(`${io.root}/.env`);
   const stateDir = io.env.WAVESMITH_STATE_DIR?.trim() || io.stateDir;
+  const deleteEnv = deleteClassifyEnv({ root: io.root, stateDir, env: io.env, envText });
   const plan = planUninstall({
     root: io.root,
     home: io.home,
     stateDir,
     deleteData,
     deleteWeights,
-    dataDir: resolveConfiguredDir(io.root, envText, "DATA_DIR", "data", io.env),
-    engineDir: resolveConfiguredDir(io.root, envText, "ENGINE_DIR", "engine/ACE-Step-1.5", io.env),
+    dataDir: deleteEnv.DATA_DIR ?? `${io.root}/data`,
+    engineDir: deleteEnv.ENGINE_DIR ?? `${io.root}/engine/ACE-Step-1.5`,
   });
   let refused = 0;
   for (const target of plan.remove) {
-    const verdict = classifyDelete(target, { home: io.home, root: io.root, env: io.env });
+    const verdict = classifyDelete(target, { home: io.home, root: io.root, env: deleteEnv });
     if (!verdict.ok) {
       io.stderr(`${verdict.message}\n`);
       refused += 1;
