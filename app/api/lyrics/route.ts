@@ -2,18 +2,20 @@
  * POST /api/lyrics — write lyrics (and, in Grok hybrid, a song plan).
  *
  * Local only is the default: Ollama when it is running, otherwise 503.
- * Grok hybrid calls xAI first and falls back to the local writer on any
- * failure. Unrestricted mode never calls Grok. This route does not filter
- * lyric text on the local path.
+ * Grok hybrid calls xAI with an API key. Grok subscription calls the local
+ * Grok Build CLI. Either one falls back to the local writer on failure, and
+ * subscription never uses the API key. Unrestricted mode calls neither.
+ * This route does not filter lyric text on the local path.
  *
  * Calls are serialized: the local LLM and the engine LM share the machine.
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { GrokClient } from "@/lib/grok/client";
-import { grokAllowed, getConnectionMode, getLyricsPolicy } from "@/lib/grok/mode";
+import { grokAllowed, subscriptionAllowed, getConnectionMode, getLyricsPolicy } from "@/lib/grok/mode";
 import { friendlyGrokError } from "@/lib/grok/plan";
 import { readGrokApiKey } from "@/lib/grok/secrets";
+import { friendlySubscriptionError, planWithGrokSubscription } from "@/lib/grok/subscription";
 import { getLyricsClient } from "@/lib/lyrics";
 import type { LyricsBrief } from "@/lib/lyrics/types";
 
@@ -60,8 +62,31 @@ export async function POST(req: Request) {
 
 async function writeLyrics(brief: LyricsBrief) {
   const local = getLyricsClient();
-  const unrestrictedSkip =
-    getConnectionMode() === "grok" && getLyricsPolicy() === "unrestricted";
+  const mode = getConnectionMode();
+  const unrestrictedSkip = (mode === "grok" || mode === "grok-subscription") && getLyricsPolicy() === "unrestricted";
+
+  if (subscriptionAllowed()) {
+    try {
+      const plan = await planWithGrokSubscription(brief);
+      return {
+        lyrics: plan.lyrics,
+        source: "grok-subscription" as const,
+        notice: null,
+        plan,
+      };
+    } catch (err) {
+      if (await local.available()) {
+        const lyrics = await local.generateLyrics(brief);
+        return {
+          lyrics,
+          source: "local" as const,
+          notice: friendlySubscriptionError(err, true),
+          plan: null,
+        };
+      }
+      throw new Error(friendlySubscriptionError(err, false));
+    }
+  }
 
   if (grokAllowed()) {
     if (!readGrokApiKey().key) {

@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import { parseArgs, type Flags } from "./args.ts";
 import { doctorChecks, doctorFailed, formatDoctor, type DoctorInput } from "./doctor.ts";
+import { inspectGrokBuild } from "./grok-build.ts";
 import { APP_MARKER, ENGINE_MARKER, SUPERVISOR_MARKER, isOurProcess } from "./identity.ts";
 import type { CliIo } from "./io.ts";
 import { renderLaunchAgent } from "./launchd.ts";
@@ -32,7 +33,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<number> {
     case "update":
       return update(io);
     case "doctor":
-      return doctor(io);
+      return doctor(io, parsed.flags);
     case "logs":
       return logs(io, parsed.flags.follow);
     case "uninstall":
@@ -248,13 +249,14 @@ async function update(io: CliIo): Promise<number> {
       follow: false,
       deleteData: false,
       deleteWeights: false,
+      deep: false,
     });
   }
   io.stdout("\nUpdate finished. Start again with: wavesmith start\n");
   return 0;
 }
 
-async function doctor(io: CliIo): Promise<number> {
+async function doctor(io: CliIo, flags: Flags): Promise<number> {
   const commands = {
     brew: io.command("brew"),
     node: io.command("node"),
@@ -271,6 +273,7 @@ async function doctor(io: CliIo): Promise<number> {
     port3000: io.listenAddresses(3000),
     port8001: io.listenAddresses(8001),
     engineHealthy: await io.engineHealthy(),
+    grok: await inspectGrokBuild({ deep: flags.deep, home: io.home, env: io.env }),
   };
   const checks = doctorChecks(input);
   io.stdout(formatDoctor(checks));

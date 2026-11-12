@@ -3,6 +3,7 @@
  * PATCH /api/settings — update user preferences (theme, onboarding flag).
  */
 import fs from "node:fs";
+import os from "node:os";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { env } from "@/lib/env";
@@ -13,6 +14,8 @@ import {
   setLyricsPolicy,
 } from "@/lib/grok/mode";
 import { clearGrokApiKeyFile, readGrokApiKey, saveGrokApiKey } from "@/lib/grok/secrets";
+import { resolveGrokBinary } from "@/cli/grok-build.ts";
+import { summarizeGrokUsage } from "@/lib/grok/usage";
 import { listSettings, setSetting } from "@/lib/settings/queries";
 import { getEngineClient } from "@/lib/engine";
 import { BASE_DIT_MODEL, baseModelOnDisk } from "@/lib/engine/base-model";
@@ -49,15 +52,28 @@ export async function GET(req: Request) {
   const lyricsAvailable = await getLyricsClient().available().catch(() => false);
   const settings = listSettings();
   const grokKey = readGrokApiKey();
+  const mode = getConnectionMode();
+  const binary = resolveGrokBinary({
+    home: process.env.HOME?.trim() || os.homedir(),
+    configuredPath: process.env.GROK_BIN,
+  });
+  const usage = summarizeGrokUsage();
   return NextResponse.json({
     settings,
     client: viaPhone ? "phone" : "mac",
     connection: {
-      mode: getConnectionMode(),
+      mode,
       lyricsPolicy: getLyricsPolicy(),
       grokConfigured: grokKey.key != null,
       grokKeySource: grokKey.source,
       grokModel: env.XAI_MODEL,
+      modeFromEnv: process.env.WAVESMITH_CONNECTION_MODE?.trim() === mode,
+      subscription: {
+        found: binary.found,
+        version: binary.version,
+        path: viaPhone ? null : binary.path || null,
+        usage,
+      },
     },
     paths: viaPhone
       ? null
@@ -86,7 +102,7 @@ const PatchSchema = z
   .object({
     theme: z.enum(["dark", "light", "system"]).optional(),
     onboardingComplete: z.boolean().optional(),
-    connectionMode: z.enum(["local", "grok"]).optional(),
+    connectionMode: z.enum(["local", "grok", "grok-subscription"]).optional(),
     lyricsPolicy: z.enum(["standard", "unrestricted"]).optional(),
     /** Stored only in the gitignored data dir. Empty string clears the file. */
     xaiApiKey: z.string().max(500).optional(),

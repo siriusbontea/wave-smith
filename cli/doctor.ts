@@ -3,6 +3,7 @@
  * Probes are injected so tests do not need Homebrew, a GPU, or a live port.
  */
 
+import type { GrokDoctorProbe } from "./grok-build.ts";
 import { assessPort } from "./ports.ts";
 
 export interface CommandProbe {
@@ -26,6 +27,8 @@ export interface DoctorInput {
   port8001: readonly string[];
   /** Meaningful when something is already listening on 8001. */
   engineHealthy: boolean;
+  /** Omitted in older callers. A missing CLI is optional and does not fail doctor. */
+  grok?: GrokDoctorProbe;
 }
 
 export interface DoctorCheck {
@@ -59,6 +62,7 @@ export function doctorChecks(input: DoctorInput): DoctorCheck[] {
     portCheck("App port 3000", 3000, input.port3000),
     portCheck("Engine port 8001", 8001, input.port8001),
     engineCheck(input),
+    grokCheck(input.grok),
   ];
   return checks;
 }
@@ -134,6 +138,53 @@ function portCheck(name: string, port: number, addresses: readonly string[]): Do
     ok: assessment.ok,
     detail: assessment.detail,
     ...(assessment.fix ? { fix: assessment.fix } : {}),
+  };
+}
+
+function grokCheck(probe: GrokDoctorProbe | undefined): DoctorCheck {
+  if (!probe) {
+    return { name: "Grok Build", ok: true, detail: "Grok Build was not checked." };
+  }
+  if (!probe.found) {
+    return {
+      name: "Grok Build",
+      ok: true,
+      detail: "Grok Build CLI is not installed. Subscription lyrics stay off until it is.",
+    };
+  }
+  if (!probe.versionOk) {
+    return {
+      name: "Grok Build",
+      ok: false,
+      detail: probe.path
+        ? `Found ${probe.path}, but it did not report a Grok version.`
+        : "Grok Build did not report a version.",
+      fix: "Reinstall the Grok Build CLI from https://x.ai/cli",
+    };
+  }
+  if (probe.auth === "unauthenticated") {
+    return {
+      name: "Grok Build",
+      ok: false,
+      detail: `${probe.version} is not signed in.`,
+      fix: "Open Terminal and run `grok login`.",
+    };
+  }
+  if (probe.auth === "failed") {
+    return {
+      name: "Grok Build",
+      ok: false,
+      detail: probe.authDetail || "The sign-in probe failed.",
+      fix: "Open Terminal and run `grok login`, then run wavesmith doctor --deep again.",
+    };
+  }
+  if (probe.auth === "ok") {
+    return { name: "Grok Build", ok: true, detail: `${probe.version} is signed in.` };
+  }
+  return {
+    name: "Grok Build",
+    ok: true,
+    detail: `${probe.version}. Sign-in was not checked. Run wavesmith doctor --deep to check it.`,
   };
 }
 

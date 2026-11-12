@@ -49,7 +49,7 @@ export interface HealthView {
   };
   lyrics: { available: boolean; model: string };
   connection?: {
-    mode: "local" | "grok";
+    mode: "local" | "grok" | "grok-subscription";
     lyricsPolicy: "standard" | "unrestricted";
     grokConfigured: boolean;
     grokKeySource: "env" | "file" | "none";
@@ -211,7 +211,7 @@ export async function forge(params: ForgeParams): Promise<{ jobId: string; merge
 
 export interface LyricsResult {
   lyrics: string;
-  source: "grok" | "local";
+  source: "grok" | "grok-subscription" | "local";
   notice: string | null;
   plan: {
     lyrics: string;

@@ -264,6 +264,12 @@ If you are offline, the key is missing, the API errors, or Grok refuses, Wavesmi
 
 **Unrestricted lyrics** (Settings → Lyrics) keeps Grok out of the path on purpose: a hosted model may refuse. The local engine and the local lyrics writer still receive your text unchanged. Wavesmith does not add its own content filter.
 
+### Grok subscription (via Grok Build)
+
+Settings → Connection → **Grok subscription (via Grok Build)** uses the Grok Build CLI you already signed in with `grok login`. It draws on the same weekly usage pool as Grok and Grok Build. It does not use `XAI_API_KEY`, and Wavesmith never reads `~/.grok/auth.json`.
+
+Prompts are sent to xAI. If the CLI is missing or signed out, Wavesmith says so and uses the local lyrics writer when Ollama is running. It does not silently switch to the API-key hybrid. Setup, limits, and troubleshooting: [docs/GROK-SUBSCRIPTION.md](docs/GROK-SUBSCRIPTION.md).
+
 ---
 
 ## Editing a song
