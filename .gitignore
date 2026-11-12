@@ -30,5 +30,7 @@ next-env.d.ts
 
 # Test output
 /test-results/
+/tests/fixtures/mode.txt
+/tests/fixtures/calls.log
 /playwright-report/
 /blob-report/

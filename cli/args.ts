@@ -11,6 +11,7 @@ export const USAGE = `Wavesmith runs on this Mac. The app stays on http://127.0.
   wavesmith open                  Open http://127.0.0.1:3000
   wavesmith update                Download updates and keep your songs and settings
   wavesmith doctor                Check this Mac and print a fix for each problem
+  wavesmith doctor --deep         Also ask Grok Build if it is signed in (uses a little of the pool and counts in Settings)
   wavesmith logs                  Show the recent log (-f follows it)
   wavesmith uninstall             Remove the app. Asks before deleting songs or models
   wavesmith login on              Start now, and again each time you log in
@@ -43,6 +44,7 @@ export interface Flags {
   follow: boolean;
   deleteData: boolean;
   deleteWeights: boolean;
+  deep: boolean;
 }
 
 export type ParseResult =
@@ -67,6 +69,7 @@ export function parseArgs(argv: readonly string[]): ParseResult {
     follow: false,
     deleteData: false,
     deleteWeights: false,
+    deep: false,
   };
   const positionals: string[] = [];
   for (const arg of rest) {
@@ -75,7 +78,12 @@ export function parseArgs(argv: readonly string[]): ParseResult {
     else if (arg === "-f" || arg === "--follow") flags.follow = true;
     else if (arg === "--delete-data") flags.deleteData = true;
     else if (arg === "--delete-weights") flags.deleteWeights = true;
-    else if (arg.startsWith("-")) {
+    else if (arg === "--deep") {
+      if (command !== "doctor") {
+        return { ok: false, exitCode: 1, message: `Unknown option: ${arg}\n\n${USAGE}` };
+      }
+      flags.deep = true;
+    } else if (arg.startsWith("-")) {
       return { ok: false, exitCode: 1, message: `Unknown option: ${arg}\n\n${USAGE}` };
     } else positionals.push(arg);
   }

@@ -33,12 +33,64 @@ interface SettingsResponse {
   measuredGenerationS: number | null;
   extend?: { model: string; ready: boolean };
   connection?: {
-    mode: "local" | "grok";
+    mode: "local" | "grok" | "grok-subscription";
     lyricsPolicy: "standard" | "unrestricted";
     grokConfigured: boolean;
     grokKeySource: "env" | "file" | "none";
     grokModel: string;
+    modeFromEnv?: boolean;
+    subscription?: {
+      found: boolean;
+      version: string;
+      path: string | null;
+      usage: {
+        session: { requests: number; totalTokens: number; costUsd: number };
+        today: { requests: number; totalTokens: number; costUsd: number };
+      };
+    };
   };
+}
+
+function connectionLabel(mode: "local" | "grok" | "grok-subscription" | undefined): string {
+  if (mode === "grok") return "Grok hybrid";
+  if (mode === "grok-subscription") return "Grok subscription (via Grok Build)";
+  return "local only";
+}
+
+function money(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+function SubscriptionStatus({
+  connection,
+}: {
+  connection: NonNullable<SettingsResponse["connection"]>;
+}) {
+  const sub = connection.subscription;
+  const session = sub?.usage.session;
+  const today = sub?.usage.today;
+  return (
+    <div className="mt-3 grid gap-1 text-sm text-muted-foreground" data-testid="grok-subscription">
+      <p>
+        Grok subscription (via Grok Build) uses the same weekly usage pool as Grok and Grok Build.
+        Prompts go to xAI. Wavesmith does not read your Grok login file. The xAI API key is not used in this mode.
+      </p>
+      <p>
+        {sub?.found
+          ? `Grok Build ${sub.version}${sub.path ? ` (${sub.path})` : ""}.`
+          : "Grok Build CLI was not found. Install it, then open Terminal and run grok login."}
+      </p>
+      <p>
+        If lyrics say you are not signed in, open Terminal and run <code>grok login</code>.
+      </p>
+      <p data-testid="grok-usage">
+        Grok subscription usage today: {today?.requests ?? 0} requests, {today?.totalTokens ?? 0} tokens,{" "}
+        {money(today?.costUsd ?? 0)}. This session: {session?.requests ?? 0} requests,{" "}
+        {session?.totalTokens ?? 0} tokens, {money(session?.costUsd ?? 0)}. Includes lyrics calls and a
+        successful doctor --deep probe.
+      </p>
+    </div>
+  );
 }
 
 function formatBytes(n: number): string {
@@ -184,8 +236,7 @@ export function SettingsView() {
         </p>
         {onPhone ? (
           <p className="mt-4 text-sm text-muted-foreground">
-            Change this on the computer. Mode is{" "}
-            {data.connection?.mode === "grok" ? "Grok hybrid" : "local only"}. Lyrics are{" "}
+            Change this on the computer. Mode is {connectionLabel(data.connection?.mode)}. Lyrics are{" "}
             {data.connection?.lyricsPolicy === "unrestricted" ? "unrestricted" : "standard"}.
           </p>
         ) : (
@@ -202,6 +253,7 @@ export function SettingsView() {
               <SelectContent>
                 <SelectItem value="local">Local only</SelectItem>
                 <SelectItem value="grok">Grok hybrid</SelectItem>
+                <SelectItem value="grok-subscription">Grok subscription (via Grok Build)</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -222,6 +274,14 @@ export function SettingsView() {
           </div>
         </div>
         )}
+        {data.connection?.modeFromEnv ? (
+          <p className="mt-3 text-sm text-muted-foreground" role="status">
+            WAVESMITH_CONNECTION_MODE is set, so this menu follows that value.
+          </p>
+        ) : null}
+        {data.connection?.mode === "grok-subscription" ? (
+          <SubscriptionStatus connection={data.connection} />
+        ) : null}
         {data.connection?.lyricsPolicy === "unrestricted" ? (
           <p className="mt-3 text-sm text-muted-foreground" role="status">
             Unrestricted keeps Grok out of the path, even if hybrid is selected. Your lyrics go to

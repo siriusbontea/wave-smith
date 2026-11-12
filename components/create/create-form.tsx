@@ -151,7 +151,7 @@ export function CreateForm() {
       }
       if (result.notice) {
         toast("Lyrics", { description: result.notice });
-      } else if (result.source === "grok") {
+      } else if (result.source === "grok" || result.source === "grok-subscription") {
         toast.success("Lyrics ready", { description: "Grok drafted the words. Forge still runs locally." });
       }
     },
@@ -206,9 +206,10 @@ export function CreateForm() {
   const canForge = prompt.trim().length > 0 && !forgeMutation.isPending && !held.busy && !healthError;
   const connection = health?.connection;
   const grokReady =
-    connection?.mode === "grok" &&
-    connection.lyricsPolicy !== "unrestricted" &&
-    connection.grokConfigured;
+    (connection?.mode === "grok" &&
+      connection.lyricsPolicy !== "unrestricted" &&
+      connection.grokConfigured) ||
+    (connection?.mode === "grok-subscription" && connection.lyricsPolicy !== "unrestricted");
   const lyricsAvailable = (health?.lyrics.available ?? false) || grokReady;
   const enhanceReady =
     health?.mockEngine ||
@@ -400,9 +401,14 @@ export function CreateForm() {
               {lyricsNotice}
             </p>
           ) : null}
-          {lyricsNotice ? null : connection?.lyricsPolicy === "unrestricted" && connection.mode === "grok" ? (
+          {lyricsNotice ? null : connection?.lyricsPolicy === "unrestricted" &&
+            (connection.mode === "grok" || connection.mode === "grok-subscription") ? (
             <p className="text-xs text-muted-foreground">
               Unrestricted lyrics stays on this machine — Grok is not used.
+            </p>
+          ) : connection?.mode === "grok-subscription" ? (
+            <p className="text-xs text-muted-foreground">
+              Write with Grok uses your Grok subscription through Grok Build. The song is still forged on this computer.
             </p>
           ) : connection?.mode === "grok" && !connection.grokConfigured ? (
             <p className="text-xs text-muted-foreground">

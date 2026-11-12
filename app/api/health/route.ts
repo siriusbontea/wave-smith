@@ -64,7 +64,7 @@ export async function GET(req?: Request) {
   }
 
   const grokKey = readGrokApiKey();
-  let mode: "local" | "grok" = "local";
+  let mode: "local" | "grok" | "grok-subscription" = "local";
   let lyricsPolicy: "standard" | "unrestricted" = "standard";
   if (dbOk) {
     try {
