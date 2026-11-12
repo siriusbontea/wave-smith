@@ -145,6 +145,14 @@ function grokCheck(probe: GrokDoctorProbe | undefined): DoctorCheck {
   if (!probe) {
     return { name: "Grok Build", ok: true, detail: "Grok Build was not checked." };
   }
+  if (probe.pathRejected) {
+    return {
+      name: "Grok Build",
+      ok: false,
+      detail: "GROK_BIN must be an absolute path, or start with ~/.",
+      fix: "Set GROK_BIN to the grok binary, for example ~/.grok/bin/grok.",
+    };
+  }
   if (!probe.found) {
     return {
       name: "Grok Build",

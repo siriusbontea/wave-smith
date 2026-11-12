@@ -47,6 +47,7 @@ export function friendlySubscriptionError(err: unknown, willFallback: boolean): 
       return `Grok Build is not signed in. Open Terminal and run \`grok login\`.${tail}`;
     }
     if (err.kind === "missing") {
+      if (/absolute path/.test(err.message)) return `${err.message}${tail}`;
       return `Grok Build CLI was not found. Install it, then open Terminal and run \`grok login\`.${tail}`;
     }
     return `${err.message}${tail}`;

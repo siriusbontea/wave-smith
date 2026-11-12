@@ -5,6 +5,10 @@
  * so a zsh `grok` function cannot add flags. Tools stay off. Each call gets
  * a fresh 0700 temp directory and a minimal environment. Wavesmith does not
  * read ~/.grok/auth.json; the CLI does that itself when HOME is set.
+ *
+ * grok 1.0.77 has no file flag for the system prompt, so that string is
+ * capped and passed as one argv element. Stdout may have a banner before
+ * the JSON; the last complete top-level object is the reply.
  */
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
@@ -12,9 +16,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { z } from "zod";
+import { recordGrokUsageFile } from "./grok-usage.ts";
 
 export const STDOUT_CAP_BYTES = 2 * 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 120_000;
+/** grok 1.0.77 has no --system-prompt file flag. This stays under ARG_MAX. */
+export const SYSTEM_PROMPT_MAX_CHARS = 32 * 1024;
 
 const UsageSchema = z
   .object({
@@ -52,6 +59,8 @@ export interface GrokBinary {
   path: string;
   version: string;
   versionOk: boolean;
+  /** GROK_BIN was set, and it was not absolute even after expanding a leading ~. */
+  pathRejected?: boolean;
 }
 
 export interface GrokBuildOutput {
@@ -72,6 +81,7 @@ export interface GrokDoctorProbe {
   path: string;
   auth: "skipped" | "ok" | "unauthenticated" | "failed";
   authDetail: string;
+  pathRejected?: boolean;
 }
 
 export function grokCandidatePaths(home: string): string[] {
@@ -121,18 +131,41 @@ function versionOf(file: string, env: Record<string, string>): string | null {
   return /^grok \d/.test(line) ? line : null;
 }
 
+/**
+ * Expand a leading ~ or ~/ against the provided home. A relative path, or
+ * ~otheruser, is rejected so it cannot be resolved against the current directory.
+ */
+export function absoluteGrokPath(raw: string, home: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  let expanded = trimmed;
+  if (expanded === "~" || expanded.startsWith("~/")) {
+    if (!path.isAbsolute(home)) return null;
+    expanded = expanded === "~" ? home : path.join(home, expanded.slice(2));
+  }
+  if (!path.isAbsolute(expanded)) return null;
+  return expanded;
+}
+
 export function resolveGrokBinary(input: {
   home: string;
   configuredPath?: string;
   env?: Record<string, string | undefined>;
 }): GrokBinary {
   const env = minimalGrokEnv(input.env);
-  const configured = input.configuredPath?.trim();
-  const candidates = configured
-    ? [configured, ...grokCandidatePaths(input.home)]
-    : grokCandidatePaths(input.home);
+  const configuredRaw = input.configuredPath?.trim();
+  const wellKnown = grokCandidatePaths(input.home).filter((candidate) => path.isAbsolute(candidate));
+  let configured: string | null = null;
+  if (configuredRaw) {
+    configured = absoluteGrokPath(configuredRaw, input.home);
+    if (!configured) {
+      return { found: false, path: "", version: "", versionOk: false, pathRejected: true };
+    }
+  }
+  const candidates = configured ? [configured, ...wellKnown] : wellKnown;
   const seen = new Set<string>();
   for (const candidate of candidates) {
+    if (!path.isAbsolute(candidate)) continue;
     const file = path.resolve(candidate);
     if (seen.has(file)) continue;
     seen.add(file);
@@ -143,7 +176,7 @@ export function resolveGrokBinary(input: {
   }
   return {
     found: false,
-    path: configured ? path.resolve(configured) : "",
+    path: configured ?? "",
     version: "",
     versionOk: false,
   };
@@ -170,10 +203,17 @@ export function buildGrokArgv(input: {
     "--no-plan",
     "--cwd",
     input.cwd,
+    // No file flag exists for this override in grok 1.0.77. --rules only appends.
     "--system-prompt-override",
     input.systemPrompt,
     "--verbatim",
   ];
+  if (input.systemPrompt.length > SYSTEM_PROMPT_MAX_CHARS) {
+    throw new GrokBuildError(
+      "protocol",
+      "The songwriter instructions are too long to pass to Grok Build.",
+    );
+  }
   const model = input.model?.trim();
   if (model) argv.push("-m", model);
   const banned = ["--yolo", "--always-approve", "--permission-mode", "bypassPermissions"];
@@ -189,6 +229,60 @@ function finishedTurn(reason: string): boolean {
 
 function looksUnauthenticated(text: string): boolean {
   return /not authenticated|you are not signed in|please (?:log|sign) in|run [`']?grok login/i.test(text);
+}
+
+/**
+ * Last complete top-level `{...}` object. A leading banner is ignored.
+ * An incomplete tail does not hide an earlier object. If the last complete
+ * object is not JSON, the reply is refused.
+ */
+export function lastGrokJsonObject(raw: string): unknown {
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        candidates.push(raw.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+  const last = candidates[candidates.length - 1];
+  if (!last) throw new GrokBuildError("protocol", "Grok Build did not return JSON.");
+  try {
+    const value = JSON.parse(last) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new GrokBuildError("protocol", "Grok Build did not return JSON.");
+    }
+    return value;
+  } catch (err) {
+    if (err instanceof GrokBuildError) throw err;
+    throw new GrokBuildError("protocol", "Grok Build did not return JSON.");
+  }
 }
 
 let inFlight = 0;
@@ -226,30 +320,44 @@ async function withSlot<T>(limit: number, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function killGroup(child: ChildProcess): void {
+/**
+ * Signal the process group and the child Wavesmith spawned.
+ * A grandchild that calls setsid leaves this group and cannot be tracked
+ * from the child's pid. Tools are off, so a normal grok run should not start
+ * one. The follow-up SIGKILL is cancelled when the child exits, so a pid
+ * that the OS reuses is not signalled.
+ */
+const killTimers = new WeakMap<ChildProcess, NodeJS.Timeout>();
+
+function signalChild(child: ChildProcess, sig: NodeJS.Signals): void {
   const pid = child.pid;
-  if (pid == null) return;
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
+  if (pid != null) {
     try {
-      child.kill("SIGTERM");
+      process.kill(-pid, sig);
     } catch {
-      // The process is already gone.
+      // The group is already gone.
     }
   }
-  const timer = setTimeout(() => {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The process is already gone.
-      }
-    }
-  }, 400);
+  try {
+    child.kill(sig);
+  } catch {
+    // The child is already gone.
+  }
+}
+
+function killGroup(child: ChildProcess): void {
+  signalChild(child, "SIGTERM");
+  if (killTimers.has(child)) return;
+  const timer = setTimeout(() => signalChild(child, "SIGKILL"), 400);
   timer.unref();
+  killTimers.set(child, timer);
+}
+
+function disarmKill(child: ChildProcess): void {
+  const timer = killTimers.get(child);
+  if (!timer) return;
+  clearTimeout(timer);
+  killTimers.delete(child);
 }
 
 export interface GrokRunHooks {
@@ -288,6 +396,12 @@ async function executeGrok(
     configuredPath: input.configuredPath ?? sourceEnv.GROK_BIN,
     env: sourceEnv,
   });
+  if (binary.pathRejected) {
+    throw new GrokBuildError(
+      "missing",
+      "GROK_BIN must be an absolute path, or start with ~/. A relative path is not used.",
+    );
+  }
   if (!binary.found) {
     throw new GrokBuildError(
       "missing",
@@ -322,9 +436,14 @@ async function executeGrok(
     child = proc;
 
     const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
     let stdoutBytes = 0;
-    let stderrBytes = 0;
+    const stderrHeadMax = 8 * 1024;
+    const stderrTailMax = 56 * 1024;
+    let stderrHead = Buffer.alloc(0);
+    let stderrTail = Buffer.alloc(0);
+    let stderrTrimmed = false;
+    let sawAuth = false;
+    let authOverlap = "";
     proc.stdout?.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.length;
       if (stdoutBytes > STDOUT_CAP_BYTES) {
@@ -335,9 +454,18 @@ async function executeGrok(
       stdout.push(chunk);
     });
     proc.stderr?.on("data", (chunk: Buffer) => {
-      stderrBytes += chunk.length;
-      if (stderrBytes > 64 * 1024) return;
-      stderr.push(chunk);
+      const text = chunk.toString("utf8");
+      if (looksUnauthenticated(authOverlap + text)) sawAuth = true;
+      authOverlap = (authOverlap + text).slice(-80);
+      if (stderrHead.length < stderrHeadMax) {
+        const need = stderrHeadMax - stderrHead.length;
+        stderrHead = Buffer.concat([stderrHead, chunk.subarray(0, need)]);
+      }
+      stderrTail = Buffer.concat([stderrTail, chunk]);
+      if (stderrTail.length > stderrTailMax) {
+        stderrTrimmed = true;
+        stderrTail = stderrTail.subarray(stderrTail.length - stderrTailMax);
+      }
     });
 
     const killer = setTimeout(() => {
@@ -347,19 +475,28 @@ async function executeGrok(
     killer.unref();
 
     const code = await new Promise<number | null>((resolve) => {
-      proc.on("error", () => resolve(null));
-      proc.on("close", (status) => resolve(status));
+      proc.on("error", () => {
+        disarmKill(proc);
+        resolve(null);
+      });
+      proc.on("close", (status) => {
+        disarmKill(proc);
+        resolve(status);
+      });
     });
     clearTimeout(killer);
+    disarmKill(proc);
 
-    const errText = Buffer.concat(stderr).toString("utf8");
+    const errText = stderrTrimmed
+      ? `${stderrHead.toString("utf8")}\n…\n${stderrTail.toString("utf8")}`
+      : stderrTail.toString("utf8");
     if (tooBig) {
       throw new GrokBuildError("output", "Grok Build returned more output than Wavesmith will read.");
     }
     if (timedOut) {
       throw new GrokBuildError("timeout", "Grok Build took too long and was stopped.");
     }
-    if (code !== 0 && looksUnauthenticated(errText)) {
+    if (code !== 0 && (sawAuth || looksUnauthenticated(errText))) {
       throw new GrokBuildError(
         "unauthenticated",
         "Grok Build is not signed in. Open Terminal and run `grok login`.",
@@ -375,12 +512,7 @@ async function executeGrok(
       );
     }
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(Buffer.concat(stdout).toString("utf8").trim());
-    } catch {
-      throw new GrokBuildError("protocol", "Grok Build did not return JSON.");
-    }
+    const parsed = lastGrokJsonObject(Buffer.concat(stdout).toString("utf8"));
     const result = ResultSchema.safeParse(parsed);
     if (!result.success) {
       throw new GrokBuildError("protocol", "Grok Build returned JSON without text and stopReason.");
@@ -421,6 +553,8 @@ export async function inspectGrokBuild(input: {
   home: string;
   env?: Record<string, string | undefined>;
   configuredPath?: string;
+  /** When set, a successful --deep probe is added to the Settings usage file. */
+  dataDir?: string;
 }): Promise<GrokDoctorProbe> {
   const env = input.env ?? process.env;
   const binary = resolveGrokBinary({
@@ -428,6 +562,17 @@ export async function inspectGrokBuild(input: {
     configuredPath: input.configuredPath ?? env.GROK_BIN,
     env,
   });
+  if (binary.pathRejected) {
+    return {
+      found: false,
+      versionOk: false,
+      version: "",
+      path: "",
+      auth: "skipped",
+      authDetail: "GROK_BIN must be an absolute path, or start with ~/.",
+      pathRejected: true,
+    };
+  }
   if (!binary.found) {
     return { found: false, versionOk: false, version: "", path: "", auth: "skipped", authDetail: "" };
   }
@@ -442,7 +587,7 @@ export async function inspectGrokBuild(input: {
     };
   }
   try {
-    await runGrokBuild({
+    const output = await runGrokBuild({
       prompt: "Reply with the single word ok.",
       systemPrompt: "Reply with the single word ok.",
       home: input.home,
@@ -450,6 +595,20 @@ export async function inspectGrokBuild(input: {
       env,
       timeoutMs: 30_000,
     });
+    if (input.dataDir) {
+      try {
+        recordGrokUsageFile(input.dataDir, {
+          model: output.model,
+          inputTokens: output.inputTokens,
+          outputTokens: output.outputTokens,
+          reasoningTokens: output.reasoningTokens,
+          totalTokens: output.totalTokens,
+          costUsd: output.costUsd,
+        });
+      } catch {
+        // The probe already succeeded. A full disk can miss this one row.
+      }
+    }
     return {
       found: true,
       versionOk: true,

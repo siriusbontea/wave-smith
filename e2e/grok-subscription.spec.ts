@@ -1,6 +1,8 @@
 /**
  * Settings can select Grok subscription without turning on the API-key hybrid.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { expect, test } from "@playwright/test";
 
 test("settings offers Grok subscription and keeps the API-key mode separate", async ({ page }) => {
@@ -12,11 +14,15 @@ test("settings offers Grok subscription and keeps the API-key mode separate", as
   await expect(panel).toContainText("grok login");
   await expect(panel).toContainText("xAI API key is not used");
   await expect(page.getByTestId("grok-usage")).toContainText("today");
+  await expect(page.getByTestId("grok-usage")).toContainText("doctor --deep");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(panel).toBeVisible();
+  const cloudArtifacts = "/opt/cursor/artifacts";
+  const shotDir = fs.existsSync(cloudArtifacts) ? cloudArtifacts : path.join(process.cwd(), "test-results");
+  fs.mkdirSync(shotDir, { recursive: true });
   await page.screenshot({
-    path: "/opt/cursor/artifacts/grok-subscription-settings.png",
+    path: path.join(shotDir, "grok-subscription-settings.png"),
     fullPage: true,
   });
 

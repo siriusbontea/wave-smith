@@ -86,7 +86,8 @@ function SubscriptionStatus({
       <p data-testid="grok-usage">
         Grok subscription usage today: {today?.requests ?? 0} requests, {today?.totalTokens ?? 0} tokens,{" "}
         {money(today?.costUsd ?? 0)}. This session: {session?.requests ?? 0} requests,{" "}
-        {session?.totalTokens ?? 0} tokens, {money(session?.costUsd ?? 0)}.
+        {session?.totalTokens ?? 0} tokens, {money(session?.costUsd ?? 0)}. Includes lyrics calls and a
+        successful doctor --deep probe.
       </p>
     </div>
   );

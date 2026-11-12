@@ -73,6 +73,18 @@ if (mode === "hang") {
 } else if (mode === "empty") {
   process.stdout.write(success("  "));
   process.exit(0);
+} else if (mode === "late-auth") {
+  process.stderr.write("x".repeat(80 * 1024));
+  process.stderr.write("You are not authenticated.\n");
+  process.stderr.write("y".repeat(80 * 1024));
+  process.exit(1);
+} else if (mode === "banner") {
+  process.stdout.write("warning: model warm\n");
+  process.stdout.write(success(lyric));
+  process.exit(0);
+} else if (mode === "banner-broken") {
+  process.stdout.write('{"text":"ok","stopReason":"end_turn"}{not json}');
+  process.exit(0);
 } else if (mode === "stopped") {
   process.stdout.write(
     JSON.stringify({

@@ -10,7 +10,11 @@ Settings → Connection → **Grok subscription (via Grok Build)**, or set `WAVE
 
 **Write with Grok** asks the CLI for lyrics, a structure, a tempo, a key, and style tags. Forge still uses ACE-Step on this computer.
 
-Each call runs the real `grok` binary (not a shell function) with tools turned off, one turn, no web search, no plan mode, and no subagents. The prompt is a file in a fresh temporary directory that is deleted afterwards. The environment passed to the CLI is `PATH`, `HOME`, and `LANG`. `XAI_API_KEY` is not passed through.
+Each call runs the real `grok` binary (not a shell function) with tools turned off, one turn, no web search, no plan mode, and no subagents. The prompt is a file in a fresh temporary directory that is deleted afterwards (`--prompt-file` on grok 1.0.77). The environment passed to the CLI is `PATH`, `HOME`, and `LANG`. `XAI_API_KEY` is not passed through.
+
+The songwriter instructions go on `--system-prompt-override`. That CLI has no flag that reads the override from a file (`--rules` only appends a string), so Wavesmith refuses an override longer than 32 KiB. A normal songwriter prompt is far below that. Stdout is expected to be one JSON object. If a log line appears first, Wavesmith uses the last complete top-level object and still discards a reply that is not finished lyrics.
+
+On a timeout, Wavesmith signals the process group and the child it spawned, then a follow-up SIGKILL. That follow-up is cancelled when the child exits, so a reused pid is not signalled. A grandchild that calls `setsid` leaves the group and is not tracked. Tools are off, so a normal call should not start one.
 
 Wavesmith does not read, copy, or log `~/.grok/auth.json`. The CLI uses that file itself because `HOME` is set. There is no OAuth flow in Wavesmith.
 
@@ -20,13 +24,13 @@ Wavesmith does not read, copy, or log `~/.grok/auth.json`. The CLI uses that fil
 2. Run `grok login` and finish the sign-in in the browser.
 3. In Wavesmith, choose **Grok subscription (via Grok Build)**.
 
-Wavesmith looks for the binary at `GROK_BIN` if you set it, then `~/.grok/bin/grok`, `/opt/homebrew/bin/grok`, `/usr/local/bin/grok`, and `~/.local/bin/grok`. `grok --version` must look like `grok 1` or newer.
+Wavesmith looks for the binary at `GROK_BIN` if you set it, then `~/.grok/bin/grok`, `/opt/homebrew/bin/grok`, `/usr/local/bin/grok`, and `~/.local/bin/grok`. `GROK_BIN` must be an absolute path, or start with `~/` (your home). A relative path such as `grok` or `./grok` is refused and the usual locations are not searched. `grok --version` must look like `grok 1` or newer. On a checked Mac the binary was `~/.grok/bin/grok`.
 
-`wavesmith doctor` reports whether that binary is installed. It does not sign in and it does not spend usage. `wavesmith doctor --deep` sends one short probe. If you are signed out, the fix is `grok login`.
+`wavesmith doctor` reports whether that binary is installed. It does not sign in and it does not spend usage. `wavesmith doctor --deep` sends one short probe. A probe that returns token counts is included in the Settings usage counter. A signed-out probe that exits before JSON is not. If you are signed out, the fix is `grok login`. A long stderr log does not hide that sign-in error.
 
 ## Usage pool
 
-Calls count against the same weekly pool as Grok and Grok Build. The CLI adds a large prompt of its own before your lyrics request (on the order of 13–15k input tokens, about $0.03 of metered equivalent on a measured `grok 1.0.77`). Settings shows requests, tokens, and `total_cost_usd` for today and for this Wavesmith session. Those numbers stay on this computer.
+Calls count against the same weekly pool as Grok and Grok Build. The CLI adds a large prompt of its own before your lyrics request (on the order of 13–15k input tokens, about $0.03 of metered equivalent on a measured `grok 1.0.77`). Settings shows requests, tokens, and `total_cost_usd` for today and for this Wavesmith session. Those numbers stay on this computer. They include lyrics calls and a successful `doctor --deep` probe. Writes are serialized so two overlapping calls both count.
 
 Optional: `GROK_BUILD_MODEL` (omit it to let the CLI pick its default, which is `grok-4.7` on `grok 1.0.77`), `GROK_BUILD_TIMEOUT_MS` (default 120000), and `GROK_BUILD_CONCURRENCY` (1 or 2, default 1).
 
@@ -42,7 +46,7 @@ Wavesmith shows the error and, when Ollama is running, writes the lyrics locally
 
 | What you see | What to do |
 |--------------|------------|
-| CLI was not found | Install Grok Build, or set `GROK_BIN` to the absolute path. |
+| CLI was not found | Install Grok Build, or set `GROK_BIN` to an absolute path or `~/...`. |
 | Not signed in | Open Terminal and run `grok login`. |
 | Took too long | The call is stopped at `GROK_BUILD_TIMEOUT_MS`. Try again, or raise that value. |
 | Did not return JSON, or stopped early | The reply is discarded. Use the local writer or try again. |

@@ -1,6 +1,7 @@
 /**
  * Grok Build subscription: a fake grok binary, never a shell, never auth.json.
  */
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,11 +10,14 @@ import { POST as lyricsPOST } from "@/app/api/lyrics/route";
 import { doctorChecks } from "@/cli/doctor.ts";
 import {
   GrokBuildError,
+  SYSTEM_PROMPT_MAX_CHARS,
   buildGrokArgv,
   inspectGrokBuild,
+  lastGrokJsonObject,
   resolveGrokBinary,
   runGrokBuild,
 } from "@/cli/grok-build.ts";
+import { readGrokUsageEntries } from "@/cli/grok-usage.ts";
 import { parseArgs } from "@/cli/args.ts";
 import { getConnectionMode, setConnectionMode, setLyricsPolicy, grokAllowed, subscriptionAllowed } from "@/lib/grok/mode";
 import { friendlySubscriptionError } from "@/lib/grok/subscription";
@@ -82,6 +86,14 @@ describe("Grok Build CLI", () => {
     expect(argv).toContain("-m");
     expect(argv).toContain("grok-4.7");
     expect(path.isAbsolute(argv[argv.indexOf("--prompt-file") + 1] ?? "")).toBe(true);
+    expect(argv[argv.indexOf("--system-prompt-override") + 1]).toBe("system");
+    expect(() =>
+      buildGrokArgv({
+        promptFile: "/tmp/prompt.txt",
+        cwd: "/tmp/scratch",
+        systemPrompt: "s".repeat(SYSTEM_PROMPT_MAX_CHARS + 1),
+      }),
+    ).toThrow(GrokBuildError);
   });
 
   it("runs the fake binary with safety flags, a temp dir, and no secret env", async () => {
@@ -186,6 +198,8 @@ describe("Grok Build CLI", () => {
       { mode: "empty", kind: "protocol" },
       { mode: "stopped", kind: "protocol" },
       { mode: "hang", kind: "timeout" },
+      { mode: "late-auth", kind: "unauthenticated" },
+      { mode: "banner-broken", kind: "protocol" },
     ];
     for (const item of cases) {
       setMode(item.mode);
@@ -299,6 +313,151 @@ describe("Grok Build CLI", () => {
       expect(row?.fix).toMatch(/grok login/);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a relative GROK_BIN and expands a leading tilde", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-grok-home-"));
+    const binDir = path.join(home, ".grok", "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const link = path.join(binDir, "grok");
+    fs.symlinkSync(fixture, link);
+    fs.chmodSync(fixture, 0o755);
+    const cwd = process.cwd();
+    const decoyDir = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-grok-cwd-"));
+    const decoy = path.join(decoyDir, "grok");
+    fs.writeFileSync(decoy, "#!/bin/sh\necho grok 9\n", { mode: 0o755 });
+    try {
+      process.chdir(decoyDir);
+      const relative = resolveGrokBinary({ home, configuredPath: "./grok" });
+      expect(relative.pathRejected).toBe(true);
+      expect(relative.found).toBe(false);
+      const bare = resolveGrokBinary({ home, configuredPath: "grok" });
+      expect(bare.pathRejected).toBe(true);
+      expect(bare.found).toBe(false);
+      const tilde = resolveGrokBinary({ home, configuredPath: "~/.grok/bin/grok" });
+      expect(tilde.found).toBe(true);
+      expect(tilde.path).toBe(link);
+      expect(tilde.version).toMatch(/^grok \d/);
+      const rejected = doctorChecks({
+        commands: {
+          brew: { ok: true, version: "Homebrew" },
+          node: { ok: true, version: "v22.14.0" },
+          pnpm: { ok: true, version: "pnpm" },
+          uv: { ok: true, version: "uv" },
+          ffmpeg: { ok: true, version: "ffmpeg" },
+          python312: { ok: true, version: "Python 3.12" },
+          git: { ok: true, version: "git" },
+        },
+        diskFreeBytes: 40 * 1024 * 1024 * 1024,
+        weightsPresent: true,
+        port3000: ["127.0.0.1"],
+        port8001: [],
+        engineHealthy: false,
+        grok: {
+          found: false,
+          versionOk: false,
+          version: "",
+          path: "",
+          auth: "skipped",
+          authDetail: "GROK_BIN must be an absolute path, or start with ~/.",
+          pathRejected: true,
+        },
+      });
+      const row = rejected.find((item) => item.name === "Grok Build");
+      expect(row?.ok).toBe(false);
+      expect(row?.detail).toMatch(/absolute path/);
+    } finally {
+      process.chdir(cwd);
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(decoyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a leading banner and keeps the last JSON object", async () => {
+    expect(lastGrokJsonObject('{"text":"only","stopReason":"end_turn"}')).toMatchObject({ text: "only" });
+    expect(lastGrokJsonObject('warning: warm\n{"text":"hi","stopReason":"end_turn"}')).toMatchObject({
+      text: "hi",
+      stopReason: "end_turn",
+    });
+    expect(
+      lastGrokJsonObject('{"text":"first","stopReason":"end_turn"}\n{"text":"second","stopReason":"end_turn"}'),
+    ).toMatchObject({ text: "second" });
+    expect(lastGrokJsonObject('{"text":"a { b } c","stopReason":"end_turn"} trailing')).toMatchObject({
+      text: "a { b } c",
+    });
+    expect(() => lastGrokJsonObject("warning: {not closed")).toThrow(GrokBuildError);
+    expect(() => lastGrokJsonObject('{"text":"ok","stopReason":"end_turn"}{not json}')).toThrow(GrokBuildError);
+
+    setMode("banner");
+    const output = await runGrokBuild({
+      prompt: "prompt",
+      systemPrompt: "system",
+      home: os.homedir(),
+      configuredPath: fixture,
+    });
+    expect(output.text).toContain("Hello from the subscription");
+    expect(output.stopReason).toBe("end_turn");
+  });
+
+  it("counts a successful doctor --deep probe and keeps concurrent usage rows", async () => {
+    setMode("success");
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-grok-home-"));
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-grok-usage-"));
+    try {
+      const skipped = await inspectGrokBuild({ deep: false, home, configuredPath: fixture, dataDir });
+      expect(skipped.auth).toBe("skipped");
+      expect(readGrokUsageEntries(dataDir)).toHaveLength(0);
+
+      setMode("unauthenticated");
+      const signedOut = await inspectGrokBuild({ deep: true, home, configuredPath: fixture, dataDir });
+      expect(signedOut.auth).toBe("unauthenticated");
+      expect(readGrokUsageEntries(dataDir)).toHaveLength(0);
+
+      setMode("success");
+      const probed = await inspectGrokBuild({ deep: true, home, configuredPath: fixture, dataDir });
+      expect(probed.auth).toBe("ok");
+      const rows = readGrokUsageEntries(dataDir);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.totalTokens).toBe(14080);
+      expect(fs.statSync(path.join(dataDir, "grok-subscription-usage.json")).mode & 0o777).toBe(0o600);
+
+      const raceDir = fs.mkdtempSync(path.join(os.tmpdir(), "wavesmith-grok-race-"));
+      const script = `
+        import { recordGrokUsageFile } from "./cli/grok-usage.ts";
+        for (let i = 0; i < 20; i++) {
+          recordGrokUsageFile(process.argv[1], {
+            model: "grok-4.7",
+            inputTokens: 1,
+            outputTokens: 1,
+            reasoningTokens: 0,
+            totalTokens: 2,
+            costUsd: 0.01,
+          });
+        }
+      `;
+      const runWriter = () =>
+        new Promise<void>((resolve, reject) => {
+          const child = spawn(
+            process.execPath,
+            ["--experimental-strip-types", "--input-type=module", "--eval", script, raceDir],
+            { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] },
+          );
+          let err = "";
+          child.stderr?.on("data", (chunk: Buffer) => {
+            err += chunk.toString("utf8");
+          });
+          child.on("close", (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(err || `usage writer exited ${code}`));
+          });
+        });
+      await Promise.all([runWriter(), runWriter()]);
+      expect(readGrokUsageEntries(raceDir)).toHaveLength(40);
+      fs.rmSync(raceDir, { recursive: true, force: true });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(dataDir, { recursive: true, force: true });
     }
   });
 });
